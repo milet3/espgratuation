@@ -1,9 +1,14 @@
+#include "IIC_SENSOR.h"
 #include "app_config.h"
 #include "bsp_key.h"
 #include "bsp_led.h"
 #include "bsp_storage.h"
 #include "bsp_uart.h"
+#include "driver/gpio.h"
 #include "esp_partition.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "lora.h"
 #include "wifi_cat1.h"
 #include <esp_log.h>
 #include <stdio.h>
@@ -11,32 +16,49 @@
 // 实例化全局变量 info
 Info_CB info;
 Sys_CB SysCB;
+
 // 运行期统计信息
 OTA_ZC_Stats g_ota_zc_stats = {0};
 char DeviceNameBuff[SUN_NUMBER + 1][64] = {"GW001", "D001", "D002", "D003"};
 char PorductIdBuff[SUN_NUMBER + 1][64] = {GW_PRODUCTID, SUB_PRODUCTID,
                                           SUB_PRODUCTID, SUB_PRODUCTID};
 
+// 运行指示灯任务 (心跳灯)
+void led_run_task(void *pvParameters) {
+  while (1) {
+    gpio_set_level(LED_RUN_PIN, 0); // 点亮
+    vTaskDelay(pdMS_TO_TICKS(500));
+    gpio_set_level(LED_RUN_PIN, 1); // 熄灭
+    vTaskDelay(pdMS_TO_TICKS(500));
+  }
+}
+
 void app_main(void) {
   // 调用移植过来的硬件初始化代码
-  extern void bsp_led_init(void);
   bsp_led_init();
   bsp_key_init();
+
+  // 启动传感器采集后台任务 (BH1750 & SHT30)
+  iic_sensor_task_start();
+
+  // 创建心跳灯任务
+  xTaskCreate(led_run_task, "led_run_task", 2048, NULL, 5, NULL);
 
   // 初始化 NVS
   EEprom_Init();
 
   // =====================================
-  // 初始化串口外设 (引脚请根据实际接线修改)
+  // 初始化外设 (引脚在 app_config.h 中定义)
   // =====================================
-  // 假设 LoRa 模块接在 TX:17, RX:16，波特率 9600
-  bsp_uart_lora_init(17, 16, 9600);
 
-  // 假设 4G Cat1 模块通过 PPPoS 方式初始化 (引脚在 bsp_uart.h 中定义)
+  // 1. 初始化 LoRa LLCC68 (SPI 接口)
+  LoRa_Init();
+
+  // 2. 初始化 4G Cat1 模块 (UART 接口 + PPPoS)
   Cat1_PPPoS_Init();
 
-  // 串口发送测试
-  bsp_uart_lora_send("Hello LoRa\r\n", 12);
+  // 测试发送
+  LoRa_SendData((uint8_t *)"Hello LoRa SPI", 14);
   bsp_uart_cat1_send("AT\r\n", 4);
 
   // NVS 测试
@@ -56,6 +78,16 @@ void app_main(void) {
     ESP_LOGI("MAIN", "NVS Test Passed!");
   } else {
     ESP_LOGE("MAIN", "NVS Test Failed!");
+  }
+
+  // 传感器数据读取测试
+  iic_sensor_data_t sensor_data;
+  while (1) {
+    iic_sensor_get_data(&sensor_data);
+    ESP_LOGI("MAIN",
+             "Sensor Data -> Temp: %.2f C, Hum: %.2f %%, Light: %.2f lux",
+             sensor_data.temperature, sensor_data.humidity, sensor_data.lux);
+    vTaskDelay(pdMS_TO_TICKS(5000));
   }
 }
 

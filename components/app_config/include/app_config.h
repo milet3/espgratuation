@@ -3,26 +3,53 @@
 
 #include <stdint.h>
 
-#define LORA_POWER_PIN GPIO_NUM_0
-#define TIM14_CH1_PIN GPIO_NUM_7
-#define EM_POWER_PIN GPIO_NUM_1
-#define LED1_PIN GPIO_NUM_10
-#define LED2_PIN GPIO_NUM_11
-#define LED3_PIN GPIO_NUM_12
-#define LED4_PIN GPIO_NUM_13
-#define SPI_CS_PIN GPIO_NUM_14
-#define CAT1_POWER_PIN GPIO_NUM_12
-#define CAT1_POWER_STA_PIN GPIO_NUM_13
-#define CAT1_NET_STA_PIN GPIO_NUM_14
-#define LORA_MD1_PIN GPIO_NUM_6
-#define LORA_AUX_PIN GPIO_NUM_7
+// 系统电源控制
+#define LORA_POWER_PIN GPIO_NUM_6
+#define EM_POWER_PIN GPIO_NUM_15 // 原 IO7 被 LED1 占用，改为 IO15
 
-#ifndef LORA_SPI_SCK
-#define LORA_SPI_SCK 18
-#define LORA_SPI_MISO 19
-#define LORA_SPI_MOSI 23
-#define LORA_SPI_CS 14
-#endif
+// Maix Bit K210 模块 (UART 接口 + 控制)
+#define K210_TX_PIN GPIO_NUM_13   // 接 K210_RX
+#define K210_RX_PIN GPIO_NUM_14   // 接 K210_TX
+#define K210_RST_PIN GPIO_NUM_11  // 原 IO47 被 LED5 占用，改为 IO11
+#define K210_BOOT_PIN GPIO_NUM_21 // K210_IO0 (配合 RST 进入下载模式)
+#define K210_INT_PIN GPIO_NUM_10  // K210_PIN6 (视觉识别中断监听)
+
+// LoRa LLCC68 模块 (SPI 接口)
+#define LORA_SPI_SCK GPIO_NUM_46
+#define LORA_SPI_MISO GPIO_NUM_38
+#define LORA_SPI_MOSI GPIO_NUM_3
+#define LORA_SPI_CS GPIO_NUM_9
+#define LORA_RESET_PIN GPIO_NUM_39
+#define LORA_BUSY_PIN GPIO_NUM_40
+#define LORA_DIO1_PIN GPIO_NUM_1
+#define LORA_TXEN_PIN GPIO_NUM_2
+#define LORA_RXEN_PIN GPIO_NUM_12
+
+// 4G EC800 模块 (UART 接口 + 控制)
+#define CAT1_TX_PIN GPIO_NUM_17
+#define CAT1_RX_PIN GPIO_NUM_16
+#define CAT1_POWER_PIN GPIO_NUM_4     // PWRKEY
+#define CAT1_POWER_STA_PIN GPIO_NUM_5 // STATUS
+#define CAT1_NET_STA_PIN GPIO_NUM_15  // NETLIGHT
+
+// 传感器 I2C 接口 (BH1750 光强 & SHT30 温湿度)
+#define SENSOR_I2C_SDA GPIO_NUM_48
+#define SENSOR_I2C_SCL GPIO_NUM_45
+#define SENSOR_I2C_PORT I2C_NUM_0
+#define BH1750_ADDR 0x23
+#define SHT30_ADDR 0x44
+
+// 土壤传感器 (UART 接口)
+#define SOIL_TX_PIN GPIO_NUM_41
+#define SOIL_RX_PIN GPIO_NUM_42
+#define SOIL_UART_PORT UART_NUM_1
+
+// 系统指示灯 (匹配原理图 LED1, LED4, LED5)
+#define LED_RUN_PIN GPIO_NUM_6   // 系统运行指示灯 (LED1)
+#define LED_LORA_PIN GPIO_NUM_18 // LoRa 通讯指示灯 (LED4)
+#define LED_NET_PIN GPIO_NUM_47  // 网络状态指示灯 (LED5)
+
+// 其他功能
 
 /* USER CODE BEGIN Private defines */
 #define SUN_NUMBER 3 // 使用几个节点板

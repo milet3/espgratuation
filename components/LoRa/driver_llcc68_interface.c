@@ -39,8 +39,8 @@
 #include "driver/gpio.h"
 #include "driver/spi_master.h"
 #include "esp_log.h"
+#include "lora.h"
 #include <string.h>
-
 // 建议在 app_config.h 或这里定义 SPI 引脚
 
 static spi_device_handle_t g_spi_handle; // SPI 设备句柄
@@ -264,53 +264,30 @@ void llcc68_interface_debug_print(const char *const fmt, ...) {
  * @param[in] len is the buffer length
  * @note      none
  */
+// 在 driver_llcc68_interface.c 中
 void llcc68_interface_receive_callback(uint16_t type, uint8_t *buf,
                                        uint16_t len) {
   switch (type) {
-  case LLCC68_IRQ_TX_DONE: {
-    ESP_LOGI("LLCC68", "IRQ: Transmission completed.");
+  case LLCC68_IRQ_RX_DONE:
+    ESP_LOGI("LLCC68", "收到无线数据，长度: %d", len);
+    // 这里直接调用你 lora.c 里的处理函数
+    extern void LoRa_TransData(uint8_t * data, uint16_t data_len);
+    extern void LoRa_ProcessOTA(uint8_t * data, uint16_t data_len);
+
+    // 根据当前状态分发数据
+    if (lora.Ota == 0) {
+      LoRa_TransData(buf, len);
+    } else {
+      LoRa_ProcessOTA(buf, len);
+    }
     break;
-  }
-  case LLCC68_IRQ_RX_DONE: {
-    ESP_LOGI("LLCC68", "IRQ: Packet received. Length: %d", len);
-    // 这里通常需要调用数据处理函数
+
+  case LLCC68_IRQ_TIMEOUT:
+    ESP_LOGW("LLCC68", "接收超时");
     break;
-  }
-  case LLCC68_IRQ_PREAMBLE_DETECTED: {
-    ESP_LOGD("LLCC68", "IRQ: Preamble detected.");
+
+  case LLCC68_IRQ_CRC_ERR:
+    ESP_LOGE("LLCC68", "CRC 校验错误，丢弃数据");
     break;
-  }
-  case LLCC68_IRQ_SYNC_WORD_VALID: {
-    ESP_LOGD("LLCC68", "IRQ: Valid sync word detected.");
-    break;
-  }
-  case LLCC68_IRQ_HEADER_VALID: {
-    ESP_LOGD("LLCC68", "IRQ: Valid header detected.");
-    break;
-  }
-  case LLCC68_IRQ_HEADER_ERR: {
-    ESP_LOGE("LLCC68", "IRQ: Header error.");
-    break;
-  }
-  case LLCC68_IRQ_CRC_ERR: {
-    ESP_LOGE("LLCC68", "IRQ: CRC error.");
-    break;
-  }
-  case LLCC68_IRQ_CAD_DONE: {
-    ESP_LOGD("LLCC68", "IRQ: CAD done.");
-    break;
-  }
-  case LLCC68_IRQ_CAD_DETECTED: {
-    ESP_LOGI("LLCC68", "IRQ: CAD detected.");
-    break;
-  }
-  case LLCC68_IRQ_TIMEOUT: {
-    ESP_LOGW("LLCC68", "IRQ: Timeout.");
-    break;
-  }
-  default: {
-    ESP_LOGW("LLCC68", "IRQ: Unknown event (0x%04X).", type);
-    break;
-  }
   }
 }

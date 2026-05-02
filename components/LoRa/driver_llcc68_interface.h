@@ -45,25 +45,18 @@
 #define CS_LOW() gpio_set_level(LORA_SPI_CS, 0)
 #define CS_HIGH() gpio_set_level(LORA_SPI_CS, 1)
 
-// RESET引脚 (假设使用 LORA_MD1_PIN 即 6)
-#ifndef LORA_RESET_PIN
-#define LORA_RESET_PIN LORA_MD1_PIN
-#endif
+// RESET引脚
 #define RESET_LOW() gpio_set_level(LORA_RESET_PIN, 0)
 #define RESET_HIGH() gpio_set_level(LORA_RESET_PIN, 1)
 
-// BUSY引脚 (假设使用 LORA_AUX_PIN 即 7)
-#ifndef LORA_BUSY_PIN
-#define LORA_BUSY_PIN LORA_AUX_PIN
-#endif
+// BUSY引脚
 #define BUSY_READ() gpio_get_level(LORA_BUSY_PIN)
 
-// 收发使能 (如果有的话，暂时保留宏定义，但指向正确的 gpio 操作)
-// 如果硬件上没有 TXEN/RXEN，可以映射到无效引脚或留空
-#define TXEN_LOW()  // gpio_set_level(..., 0)
-#define TXEN_HIGH() // gpio_set_level(..., 1)
-#define RXEN_LOW()  // gpio_set_level(..., 0)
-#define RXEN_HIGH() // gpio_set_level(..., 1)
+// 收发使能 (射频开关控制)
+#define TXEN_LOW() gpio_set_level(LORA_TXEN_PIN, 0)
+#define TXEN_HIGH() gpio_set_level(LORA_TXEN_PIN, 1)
+#define RXEN_LOW() gpio_set_level(LORA_RXEN_PIN, 0)
+#define RXEN_HIGH() gpio_set_level(LORA_RXEN_PIN, 1)
 
 #ifdef __cplusplus
 extern "C" {

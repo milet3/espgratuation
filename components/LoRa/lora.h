@@ -11,19 +11,15 @@
 #include "driver/gpio.h"
 #include <stdint.h>
 
-
 // ==========================================
 // 需要根据 ESP32 的实际接线修改以下引脚宏定义
 // ==========================================
-// M0 和 M1 引脚用于控制 LoRa 的工作模式
-#define LORA_M0_PIN GPIO_NUM_18
-#define LORA_M1_PIN GPIO_NUM_19
+// M0 和 M1 引脚用于控制 LoRa 的工作模式 (仅限 UART 模块)
+// 在当前 SPI 驱动中已不再使用这些宏
 
-// AUX 引脚已在 app_config.h 中定义
-// #define LORA_AUX_PIN   GPIO_NUM_21
-
-// 模块供电控制引脚 (如果没用到可以不用)
-#define LORA_PWR_PIN GPIO_NUM_42
+// 使用 app_config.h 中的定义
+#define LORA_AUX_PIN LORA_BUSY_PIN
+#define LORA_PWR_PIN LORA_POWER_PIN
 
 // SUN_NUMBER 和 VERSION_LEN 已经在 app_config.h 中定义
 // #define SUN_NUMBER     10
@@ -73,6 +69,7 @@ typedef struct {
   uint8_t OTA_Buff[300]; // 子设备OTA数据缓冲区
 } LoRaCB;                // LoRa模块控制结构体
 
+/*
 #define LoRa_MODE0                                                             \
   gpio_set_level(LORA_M0_PIN, 0);                                              \
   gpio_set_level(LORA_M1_PIN, 0) // LoRa模块 模式0
@@ -85,6 +82,7 @@ typedef struct {
 #define LoRa_MODE3                                                             \
   gpio_set_level(LORA_M0_PIN, 1);                                              \
   gpio_set_level(LORA_M1_PIN, 1) // LoRa模块 模式3
+*/
 
 #define LoRa_AUX gpio_get_level(LORA_AUX_PIN) // 读取电平状态,判断模块状态
 #define LoRa_PowerON                                                           \
@@ -254,16 +252,55 @@ extern LoRaCB lora; // 外部变量声明，LoRa模块控制结构体
 
 #define LoRa_autocheck 3000 // 自动检查间隔时间 单位：毫秒
 
-void LoRa_Init(void);                      // 函数声明，初始化LoRa模块
+// void LoRa_Init(void);                      // 函数声明，初始化LoRa模块
 void LoRa_ConfigData(uint8_t *, uint16_t); // 函数声明，处理LoRa配置状态的数据
 void LoRa_TransData(uint8_t *, uint16_t); // 函数声明，处理LoRa传输状态的数据
 void LoRa_ActiveEvent(void);              // 函数声明，loRa主动事件
 void LoRa_OTA(uint16_t); // 函数声明，LoRa子设备OTA传输数据
 void LoRa_ProcessOTA(uint8_t *, uint16_t); // 函数声明，处理LoRa接收到的OTA数据
 
-void LoRa_Init(void);
+#define LLCC68_LORA_DEFAULT_STOP_TIMER_ON_PREAMBLE                             \
+  LLCC68_BOOL_FALSE /**< disable stop timer on preamble */
+#define LLCC68_LORA_DEFAULT_REGULATOR_MODE                                     \
+  LLCC68_REGULATOR_MODE_DC_DC_LDO                     /**< only ldo */
+#define LLCC68_LORA_DEFAULT_PA_CONFIG_DUTY_CYCLE 0x02 /**< set +17dBm power */
+#define LLCC68_LORA_DEFAULT_PA_CONFIG_HP_MAX 0x03     /**< set +17dBm power */
+#define LLCC68_LORA_DEFAULT_TX_DBM 17                 /**< +17dBm */
+#define LLCC68_LORA_DEFAULT_RAMP_TIME                                          \
+  LLCC68_RAMP_TIME_10US                         /**< set ramp time 10 us */
+#define LLCC68_LORA_DEFAULT_SF LLCC68_LORA_SF_9 /**< sf9 */
+#define LLCC68_LORA_DEFAULT_BANDWIDTH                                          \
+  LLCC68_LORA_BANDWIDTH_125_KHZ                   /**< 125khz */
+#define LLCC68_LORA_DEFAULT_CR LLCC68_LORA_CR_4_5 /**< cr4/5 */
+#define LLCC68_LORA_DEFAULT_LOW_DATA_RATE_OPTIMIZE                             \
+  LLCC68_BOOL_FALSE /**< disable low data rate optimize */
+#define LLCC68_LORA_DEFAULT_RF_FREQUENCY 480000000U /**< 480000000Hz */
+#define LLCC68_LORA_DEFAULT_SYMB_NUM_TIMEOUT 0      /**< 0 */
+#define LLCC68_LORA_DEFAULT_SYNC_WORD 0x3444U       /**< public network */
+#define LLCC68_LORA_DEFAULT_RX_GAIN 0x94            /**< common rx gain */
+#define LLCC68_LORA_DEFAULT_OCP 0x38                /**< 140 mA */
+#define LLCC68_LORA_DEFAULT_PREAMBLE_LENGTH 12      /**< 12 */
+#define LLCC68_LORA_DEFAULT_HEADER                                             \
+  LLCC68_LORA_HEADER_EXPLICIT               /**< explicit header */
+#define LLCC68_LORA_DEFAULT_BUFFER_SIZE 255 /**< 255 */
+#define LLCC68_LORA_DEFAULT_CRC_TYPE LLCC68_LORA_CRC_TYPE_ON /**< crc on */
+#define LLCC68_LORA_DEFAULT_INVERT_IQ                                          \
+  LLCC68_BOOL_FALSE /**< disable invert iq */
+#define LLCC68_LORA_DEFAULT_CAD_SYMBOL_NUM                                     \
+  LLCC68_LORA_CAD_SYMBOL_NUM_2              /**< 2 symbol */
+#define LLCC68_LORA_DEFAULT_CAD_DET_PEAK 24 /**< 24 */
+#define LLCC68_LORA_DEFAULT_CAD_DET_MIN 10  /**< 10 */
+#define LLCC68_LORA_DEFAULT_START_MODE                                         \
+  LLCC68_START_MODE_WARM /**< warm mode                                        \
+                          */
+#define LLCC68_LORA_DEFAULT_RTC_WAKE_UP                                        \
+  LLCC68_BOOL_TRUE /**< enable rtc wake up */
+
+uint8_t LoRa_Init(void);
+uint8_t LoRa_EnterRxMode(void);
+void LoRa_RcvData(void);
 void LoRa_ConfigData(uint8_t *data, uint16_t data_len);
-void LoRa_SendData(uint8_t *data, uint16_t len);
+uint8_t LoRa_SendData(uint8_t *data, uint16_t len);
 
 uint16_t CRC16_Modbus(uint8_t *pdata, uint16_t len);
 
