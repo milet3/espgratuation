@@ -5,9 +5,12 @@
 #include "bsp_storage.h"
 #include "bsp_uart.h"
 #include "driver/gpio.h"
+#include "esp_mqtt.h"
+#include "esp_ota_ops.h"
 #include "esp_partition.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "k210.h"
 #include "lora.h"
 #include "wifi_cat1.h"
 #include <esp_log.h>
@@ -24,12 +27,41 @@ char PorductIdBuff[SUN_NUMBER + 1][64] = {GW_PRODUCTID, SUB_PRODUCTID,
                                           SUB_PRODUCTID, SUB_PRODUCTID};
 
 // 运行指示灯任务 (心跳灯)
+void led_run_task(void *pvParameters);
+// MQTT 数据上报任务
+void mqtt_upload_task(void *pvParameters);
+// OTA 写入任务
+void start_OTAWriteTask(void *pvParameters);
+
+// 运行指示灯任务 (心跳灯)
 void led_run_task(void *pvParameters) {
   while (1) {
     gpio_set_level(LED_RUN_PIN, 0); // 点亮
     vTaskDelay(pdMS_TO_TICKS(500));
     gpio_set_level(LED_RUN_PIN, 1); // 熄灭
     vTaskDelay(pdMS_TO_TICKS(500));
+  }
+}
+
+// MQTT 数据上报任务
+void mqtt_upload_task(void *pvParameters) {
+  iic_sensor_data_t sensor_data;
+  while (1) {
+    // 检查是否连接上 MQTT
+    if (SysCB.SysEventFlag & CONNECT_MQTT) {
+      // 获取传感器数据
+      iic_sensor_get_data(&sensor_data);
+      ESP_LOGI("UPLOAD", "Uploading Sensor Data...");
+
+      // 上传数据到 OneNet
+      WiFi_Cat1_GatewayDataPost(sensor_data.temperature, sensor_data.humidity,
+                                sensor_data.lux);
+    } else {
+      ESP_LOGW("UPLOAD", "MQTT not connected, skipping upload...");
+    }
+
+    // 每 10 秒上传一次（可根据需要调整）
+    vTaskDelay(pdMS_TO_TICKS(10000));
   }
 }
 
@@ -44,6 +76,9 @@ void app_main(void) {
   // 创建心跳灯任务
   xTaskCreate(led_run_task, "led_run_task", 2048, NULL, 5, NULL);
 
+  // 创建数据上传任务
+  xTaskCreate(mqtt_upload_task, "mqtt_upload_task", 4096, NULL, 5, NULL);
+
   // 初始化 NVS
   EEprom_Init();
 
@@ -57,37 +92,37 @@ void app_main(void) {
   // 2. 初始化 4G Cat1 模块 (UART 接口 + PPPoS)
   Cat1_PPPoS_Init();
 
+  // 3. 启动 MQTT 客户端
+  // 根据 app_config.h 中的定义拼接 URI
+  char mqtt_uri[64];
+  snprintf(mqtt_uri, sizeof(mqtt_uri), "mqtt://%s:%d", MQTT_SERVER, MQTT_PORT);
+  esp_mqtt_app_start(mqtt_uri);
+
+  // 4. 初始化 K210 视觉模块 (UART 接口)
+  k210_uart_init();
+
   // 测试发送
   LoRa_SendData((uint8_t *)"Hello LoRa SPI", 14);
   bsp_uart_cat1_send("AT\r\n", 4);
 
-  // NVS 测试
-  ESP_LOGI("MAIN", "Testing NVS...");
-  int32_t write_val = 12345;
-  int32_t read_val = 0;
-
-  // 测试写入键值对
-  ESP_LOGI("MAIN", "Writing %ld to NVS...", write_val);
-  EEprom_WriteData("threshold", &write_val, sizeof(write_val));
-
-  // 测试读取键值对
-  EEprom_ReadData("threshold", &read_val, sizeof(read_val));
-  ESP_LOGI("MAIN", "Read from NVS: %ld", read_val);
-
-  if (write_val == read_val) {
-    ESP_LOGI("MAIN", "NVS Test Passed!");
-  } else {
-    ESP_LOGE("MAIN", "NVS Test Failed!");
+  // =====================================
+  // 初始化 OTA 升级任务
+  // =====================================
+  if (OTA_ZC_Queue == NULL) {
+    OTA_ZC_Queue = xQueueCreate(OTA_ZC_QUEUE_LEN, sizeof(OTA_ZC_Chunk *));
   }
+  // 启动 OTA 写入任务 (负责将下载的固件写入 Flash 分区)
+  xTaskCreate(start_OTAWriteTask, "ota_write_task", 4096, NULL, 5, NULL);
+  ESP_LOGI("MAIN", "OTA 升级任务已启动");
 
-  // 传感器数据读取测试
+  // 传感器数据本地查看
   iic_sensor_data_t sensor_data;
   while (1) {
     iic_sensor_get_data(&sensor_data);
     ESP_LOGI("MAIN",
-             "Sensor Data -> Temp: %.2f C, Hum: %.2f %%, Light: %.2f lux",
+             "Local View -> Temp: %.2f C, Hum: %.2f %%, Light: %.2f lux",
              sensor_data.temperature, sensor_data.humidity, sensor_data.lux);
-    vTaskDelay(pdMS_TO_TICKS(5000));
+    vTaskDelay(pdMS_TO_TICKS(10000));
   }
 }
 
@@ -121,6 +156,13 @@ void start_OTAWriteTask(void *pvParameters) {
         // 注意：page_index 是基于页/分片的偏移，如果每一片大小是 256 字节：
         uint32_t write_offset = chunk->page_index * OTA_RANGE_SIZE;
 
+        // 如果是第一片数据，先擦除整个分区
+        if (chunk->page_index == 0) {
+          ESP_LOGI("OTA", "正在擦除分区 %s (%d 字节)...", part_label,
+                   (int)part->size);
+          esp_partition_erase_range(part, 0, part->size);
+        }
+
         // 2. 带重试机制的 Flash 写入
         for (int attempt = 0; attempt < OTA_ZC_WRITE_RETRY_MAX; attempt++) {
           err =
@@ -140,6 +182,14 @@ void start_OTAWriteTask(void *pvParameters) {
         } else {
           ESP_LOGD("OTA", "写入成功: offset=0x%08X, len=%d",
                    (unsigned int)write_offset, chunk->len);
+        }
+
+        // 如果是最后一片数据，且是网关自身升级，则切换分区并重启
+        if (chunk->is_last && chunk->ota_staflag == 0) {
+          ESP_LOGI("OTA", "网关升级完成，正在切换分区并重启...");
+          esp_ota_set_boot_partition(part);
+          vTaskDelay(pdMS_TO_TICKS(1000));
+          esp_restart();
         }
       } else {
         ESP_LOGE("OTA", "未找到目标分区 %s", part_label);

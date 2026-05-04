@@ -1,6 +1,7 @@
 #include "wifi_cat1.h"
 #include "app_config.h"
 #include "bsp_uart.h"
+#include "esp_http_client.h"
 #include "esp_log.h"
 #include "esp_mqtt.h"
 #include "esp_wifi.h" // 补充缺失的头文件
@@ -48,6 +49,29 @@ void WiFi_Cat1_SubDataPost(unsigned char *postdata) {
   esp_mqtt_publish_msg(temptopic, (const char *)postdata,
                        strlen((char *)postdata), 0, 0);
   ESP_LOGI(TAG, "SubDataPost sent: %s", postdata);
+}
+
+void WiFi_Cat1_GatewayDataPost(float temp, float hum, float lux) {
+  char temptopic[128];
+  char tempdata[512];
+
+  // OneNet 物模型属性上报主题
+  snprintf(temptopic, sizeof(temptopic), "$sys/%s/%s/thing/property/post",
+           GW_PRODUCTID, GW_DEVICENAME);
+
+  // 构造 JSON 数据包
+  // 使用 app_config.h 中定义的 ATTRIBUTE5 (temperature), ATTRIBUTE6 (humidity),
+  // ATTRIBUTE7 (lightlux)
+  snprintf(tempdata, sizeof(tempdata),
+           "{\"id\":\"123\",\"version\":\"1.0\",\"params\":{"
+           "\"%s\":{\"value\":%.2f},"
+           "\"%s\":{\"value\":%.2f},"
+           "\"%s\":{\"value\":%.2f}"
+           "}}",
+           ATTRIBUTE5, temp, ATTRIBUTE6, hum, ATTRIBUTE7, lux);
+
+  esp_mqtt_publish_msg(temptopic, tempdata, strlen(tempdata), 0, 0);
+  ESP_LOGI(TAG, "GatewayDataPost sent to %s: %s", temptopic, tempdata);
 }
 
 /*-------------------------------------------------*/
@@ -113,6 +137,97 @@ void WiFi_Cat1_PropertyVersion(uint8_t num) {
 
 void WiFi_Cat1_CheckOTATask(uint8_t num) {
   ESP_LOGI(TAG, "WiFi_Cat1_CheckOTATask %d", num);
+}
+
+typedef struct {
+  char url[256];
+  uint8_t ota_staflag;
+} ota_task_args_t;
+
+static void ota_download_task(void *pvParameters) {
+  ota_task_args_t *args = (ota_task_args_t *)pvParameters;
+  ESP_LOGI(TAG, "开始从 %s 下载 OTA 固件", args->url);
+
+  esp_http_client_config_t config = {
+      .url = args->url,
+      .timeout_ms = 10000,
+  };
+
+  esp_http_client_handle_t client = esp_http_client_init(&config);
+  if (client == NULL) {
+    ESP_LOGE(TAG, "HTTP 客户端初始化失败");
+    free(args);
+    vTaskDelete(NULL);
+    return;
+  }
+
+  esp_err_t err = esp_http_client_open(client, 0);
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "无法打开 HTTP 连接: %s", esp_err_to_name(err));
+    esp_http_client_cleanup(client);
+    free(args);
+    vTaskDelete(NULL);
+    return;
+  }
+
+  int content_length = esp_http_client_fetch_headers(client);
+  if (content_length <= 0) {
+    ESP_LOGE(TAG, "获取固件大小失败");
+    esp_http_client_cleanup(client);
+    free(args);
+    vTaskDelete(NULL);
+    return;
+  }
+
+  uint8_t *buffer = malloc(OTA_RANGE_SIZE);
+  if (buffer == NULL) {
+    ESP_LOGE(TAG, "内存分配失败");
+    esp_http_client_cleanup(client);
+    free(args);
+    vTaskDelete(NULL);
+    return;
+  }
+
+  int total_read = 0;
+  uint32_t page_index = 0;
+
+  while (total_read < content_length) {
+    int read = esp_http_client_read(client, (char *)buffer, OTA_RANGE_SIZE);
+    if (read < 0) {
+      ESP_LOGE(TAG, "HTTP 读取错误");
+      break;
+    } else if (read == 0) {
+      break;
+    }
+    total_read += read;
+    uint8_t is_last = (total_read >= content_length) ? 1 : 0;
+
+    // 调用现有的处理逻辑，将数据块放入队列
+    OTAServer_process(buffer, read, page_index, is_last, args->ota_staflag);
+
+    page_index++;
+    // 给其他任务一点运行时间，防止看门狗复位
+    vTaskDelay(pdMS_TO_TICKS(10));
+  }
+
+  ESP_LOGI(TAG, "OTA 下载完成，总共读取: %d 字节", total_read);
+
+  free(buffer);
+  esp_http_client_cleanup(client);
+  free(args);
+  vTaskDelete(NULL);
+}
+
+void WiFi_Cat1_StartOTA(const char *url, uint8_t ota_staflag) {
+  ota_task_args_t *args = malloc(sizeof(ota_task_args_t));
+  if (args == NULL)
+    return;
+
+  strncpy(args->url, url, sizeof(args->url) - 1);
+  args->url[sizeof(args->url) - 1] = '\0';
+  args->ota_staflag = ota_staflag;
+
+  xTaskCreate(ota_download_task, "ota_download", 8192, args, 5, NULL);
 }
 
 void WiFi_Cat1_OTADownload(uint16_t s, uint16_t e, uint8_t num) {

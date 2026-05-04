@@ -62,6 +62,10 @@ void OTAServer_process(uint8_t *data, uint16_t datalen, uint32_t page_index,
 void WiFi_Cat1_ActiveEvent(void); // 函数说明，WiFi模块 or 4G Cat1模块主动事件
 void WiFi_Cat1_SubOnline(char, char); // 函数说明，子设备上下线
 void WiFi_Cat1_SubDataPost(unsigned char *); // 函数说明，子设备数据上传
+void WiFi_Cat1_GatewayDataPost(float temp, float hum,
+                               float lux); // 函数说明，网关数据上传
+void WiFi_Cat1_StartOTA(const char *url,
+                        uint8_t ota_staflag); // 函数说明，开始OTA下载
 void WiFi_Cat1_PropertyVersion(uint8_t); // 函数说明，向服务器上传版本号
 void WiFi_Cat1_CheckOTATask(uint8_t); // 函数说明，查询是否有OTA任务
 void WiFi_Cat1_OTADownload(uint16_t, uint16_t,
