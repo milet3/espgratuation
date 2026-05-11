@@ -9,6 +9,7 @@
 #include "app_config.h" // 引入全局宏，如 GW_DEVICENAME, GW_PRODUCTID 等
 #include "cJSON.h"
 #include "esp_log.h"
+#include "esp_netif.h"
 #include "mqtt_client.h"
 #include "wifi_cat1.h"
 #include <stddef.h>
@@ -32,37 +33,11 @@ static const char *TAG = "ESP_MQTT";
 static esp_mqtt_client_handle_t mqtt_client = NULL; // MQTT 客户端句柄
 extern Sys_CB SysCB;
 
-/**
- * @brief 处理 OTA 升级通知
- * @param data JSON 格式的通知数据
- * @param len 数据长度
- */
-static void Process_OTA_Inform(const char *data, int len) {
-  cJSON *root = cJSON_ParseWithLength(data, len);
-  if (root == NULL) {
-    ESP_LOGE(TAG, "解析 OTA JSON 失败");
-    return;
-  }
+// 新增：断连自动复位计数
+static uint32_t disconnect_start_tick = 0;
+#define MQTT_DISCONNECT_RESET_TIMEOUT_MS (180000) // 3分钟无法连接则重启网络
 
-  cJSON *params = cJSON_GetObjectItem(root, "params");
-  if (params) {
-    cJSON *url = cJSON_GetObjectItem(params, "url");
-    if (url && cJSON_IsString(url)) {
-      ESP_LOGI(TAG, "收到 OTA 升级通知, URL: %s", url->valuestring);
-      // 默认 ota_staflag 为 0 (网关自己升级)
-      uint8_t ota_staflag = 0;
-      cJSON *type = cJSON_GetObjectItem(params, "type");
-      if (type && cJSON_IsNumber(type)) {
-        ota_staflag = (uint8_t)type->valueint;
-      }
-      // 触发下载任务
-      WiFi_Cat1_StartOTA(url->valuestring, ota_staflag);
-    }
-  }
-  cJSON_Delete(root);
-}
-
-char TopicBuff[6][128]; // 二维数组，存放需要订阅和发布的主题(Topic)字符串
+char TopicBuff[7][128]; // 二维数组，存放需要订阅和发布的主题(Topic)字符串
 char TopicNum; // 记录实际使用的主题数量
 char Mqtt_Password[512]; // 存放计算出来的鉴权密码 (扩大到 512 字节防截断)
 
@@ -100,15 +75,24 @@ void MQTT_Init(void) {
   // =======================================================
   // 1. 恢复原有的 HMAC-SHA1 鉴权密码计算逻辑
   // =======================================================
-  base64_decode(GW_DEVICESECRET, (unsigned char *)token.decodekey);
+  int key_len =
+      base64_decode(GW_DEVICESECRET, (unsigned char *)token.decodekey);
   sprintf(token.StringForSignature,
           "%s\nsha1\nproducts/%s/devices/%s\n2018-10-31", UNIX, GW_PRODUCTID,
           GW_DEVICENAME);
+
+  ESP_LOGD(TAG, "StringForSignature: %s", token.StringForSignature);
+
+  // OneNet 要求对二进制摘要进行 Base64 编码
+  // 注意：在本项目的 utils_hmac.c 中，utils_hmac_sha1_hex 实际上输出的是 20
+  // 字节二进制
   utils_hmac_sha1_hex(token.StringForSignature,
                       strlen(token.StringForSignature), token.signtemp,
-                      token.decodekey, strlen(token.decodekey));
-  base64_encode((unsigned char *)token.signtemp, token.sign,
-                strlen(token.signtemp));
+                      token.decodekey, key_len); // 使用解码后的实际长度 key_len
+
+  // 对 20 字节二进制摘要进行 Base64 编码
+  base64_encode((unsigned char *)token.signtemp, token.sign, 20);
+
   sprintf(token.res, "products/%s/devices/%s", GW_PRODUCTID, GW_DEVICENAME);
   URL_encode(token.sign, strlen(token.sign), token.signURL);
   URL_encode(token.res, strlen(token.res), token.resURL);
@@ -123,28 +107,11 @@ void MQTT_Init(void) {
   // =======================================================
   // 2. 生成与平台通信所需的 Topic
   // =======================================================
-  // 使用 snprintf 替代 sprintf 以防止缓冲区溢出
+  // 属性设置下发 (必选)
   snprintf(TopicBuff[0], sizeof(TopicBuff[0]), "$sys/%s/%s/thing/property/set",
-           GW_PRODUCTID, GW_DEVICENAME); // 属性设置下发
-  snprintf(TopicBuff[1], sizeof(TopicBuff[1]),
-           "$sys/%s/%s/thing/sub/login/reply", GW_PRODUCTID,
-           GW_DEVICENAME); // 子设备登录应答
-  snprintf(TopicBuff[2], sizeof(TopicBuff[2]),
-           "$sys/%s/%s/thing/sub/logout/reply", GW_PRODUCTID,
-           GW_DEVICENAME); // 子设备登出应答
-  snprintf(TopicBuff[3], sizeof(TopicBuff[3]),
-           "$sys/%s/%s/thing/pack/post/reply", GW_PRODUCTID,
-           GW_DEVICENAME); // 数据打包上报应答
-  snprintf(TopicBuff[4], sizeof(TopicBuff[4]),
-           "$sys/%s/%s/thing/sub/property/set", GW_PRODUCTID,
-           GW_DEVICENAME); // 子设备属性设置下发
-  snprintf(TopicBuff[5], sizeof(TopicBuff[5]), "$sys/%s/%s/ota/inform",
-           GW_PRODUCTID, GW_DEVICENAME); // OTA 升级通知
-  TopicNum = 6;
+           GW_PRODUCTID, GW_DEVICENAME);
 
-  // 注意：在 ESP-IDF 的 MQTT 库中，不需要再手动拼接 0x10, 0x82 等底层的 MQTT
-  // 16进制报文。 那些基于底层数组的拼接函数全部被 ESP-IDF 内部的 mqtt_client
-  // API 取代。
+  TopicNum = 1;
 }
 
 /**
@@ -165,22 +132,41 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base,
   case MQTT_EVENT_CONNECTED:
     ESP_LOGI(TAG, "MQTT_EVENT_CONNECTED");
     SysCB.SysEventFlag |= CONNECT_MQTT;
-    // 连接成功后，遍历订阅 TopicBuff 中的所有主题
+    disconnect_start_tick = 0; // 连接成功，清空计时器
+
+    // 第一步：订阅所有主题，并使用 QoS 1 确保订阅成功
     for (int i = 0; i < TopicNum; i++) {
-      // 参数说明：(客户端句柄, 主题字符串, QoS等级)
-      esp_mqtt_client_subscribe(client, TopicBuff[i], 0);
-      ESP_LOGI(TAG, "Subscribed to %s", TopicBuff[i]);
+      int msg_id = esp_mqtt_client_subscribe(client, TopicBuff[i], 1);
+      ESP_LOGI(TAG, "正在订阅主题 [%s], msg_id=%d", TopicBuff[i], msg_id);
     }
     break;
 
   case MQTT_EVENT_DISCONNECTED:
     ESP_LOGI(TAG, "MQTT_EVENT_DISCONNECTED");
     SysCB.SysEventFlag &= ~CONNECT_MQTT;
-    // 这里可以处理断开连接后的逻辑，ESP-MQTT 底层通常会自动重连
+
+    // 如果不在 OTA 升级中，则进行重连超时判断
+    if (!(SysCB.SysEventFlag & OTA_RUNNING)) {
+      if (disconnect_start_tick == 0) {
+        disconnect_start_tick = xTaskGetTickCount();
+      } else {
+        uint32_t diff =
+            (xTaskGetTickCount() - disconnect_start_tick) * portTICK_PERIOD_MS;
+        if (diff > MQTT_DISCONNECT_RESET_TIMEOUT_MS) {
+          ESP_LOGE(TAG, "MQTT 连续断连超过 %d 秒，强制重启网络模块!",
+                   MQTT_DISCONNECT_RESET_TIMEOUT_MS / 1000);
+          disconnect_start_tick = 0;
+          // 注意：此处需要包含 wifi_cat1.h 或声明外部复位函数
+          extern void Cat1_Reset(void);
+          Cat1_Reset();
+        }
+      }
+    }
     break;
 
   case MQTT_EVENT_SUBSCRIBED:
     ESP_LOGI(TAG, "MQTT_EVENT_SUBSCRIBED, msg_id=%d", event->msg_id);
+    // 修正：不再在回调中执行阻塞延迟或报备，仅记录日志
     break;
 
   case MQTT_EVENT_UNSUBSCRIBED:
@@ -191,25 +177,46 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base,
     ESP_LOGI(TAG, "MQTT_EVENT_PUBLISHED, msg_id=%d", event->msg_id);
     break;
 
-  case MQTT_EVENT_DATA:
-    ESP_LOGI(TAG, "MQTT_EVENT_DATA");
-    // 打印收到的主题和数据内容
-    // 注意：event->topic 和 event->data 不是以 '\0' 结尾的字符串，必须配合 len
-    // 使用 %.*s 打印
-    printf("TOPIC=%.*s\r\n", event->topic_len, event->topic);
-    printf("DATA=%.*s\r\n", event->data_len, event->data);
+  case MQTT_EVENT_DATA: {
+    ESP_LOGW(TAG, "!!! 收到 MQTT 数据包 !!!");
+    ESP_LOGI(TAG, "数据长度: %d", event->data_len);
+
+    // 安全处理非空终止的 Topic 字符串
+    char topic_tmp[128] = {0};
+    int copy_len = event->topic_len < (sizeof(topic_tmp) - 1)
+                       ? event->topic_len
+                       : (sizeof(topic_tmp) - 1);
+    memcpy(topic_tmp, event->topic, copy_len);
+    topic_tmp[copy_len] = '\0';
+
+    ESP_LOGW(TAG, "收到主题: %s", topic_tmp);
+    ESP_LOGI(TAG, "收到原始数据: %.*s", event->data_len, event->data);
 
     // --- 业务逻辑处理区 ---
-    // 在这里，你可以根据 event->topic
-    // 来判断是哪个主题下发的数据，并调用不同的处理函数
-    if (strncmp(event->topic, TopicBuff[5], event->topic_len) == 0) {
-      // 处理 OTA 通知
-      Process_OTA_Inform(event->data, event->data_len);
-    }
+    // 目前仅处理属性设置等基础逻辑，OTA 已改为开机主动查询架构
     break;
+  }
 
   case MQTT_EVENT_ERROR:
-    ESP_LOGI(TAG, "MQTT_EVENT_ERROR");
+    ESP_LOGE(TAG, "MQTT_EVENT_ERROR - 详细错误信息:");
+    if (event->error_handle->error_type == MQTT_ERROR_TYPE_TCP_TRANSPORT) {
+      ESP_LOGE(TAG, "  错误类型: TCP 传输错误");
+      ESP_LOGE(TAG, "  esp-tls 错误码: 0x%x",
+               event->error_handle->esp_tls_last_esp_err);
+      ESP_LOGE(TAG, "  TLS 栈错误码: 0x%x",
+               event->error_handle->esp_tls_stack_err);
+      ESP_LOGE(TAG, "  Socket errno: %d (%s)",
+               event->error_handle->esp_transport_sock_errno,
+               strerror(event->error_handle->esp_transport_sock_errno));
+    } else if (event->error_handle->error_type ==
+               MQTT_ERROR_TYPE_CONNECTION_REFUSED) {
+      ESP_LOGE(TAG, "  错误类型: 服务器拒绝连接");
+      ESP_LOGE(TAG, "  拒绝原因码: 0x%x",
+               event->error_handle->connect_return_code);
+    } else {
+      ESP_LOGE(TAG, "  错误类型: 其他错误 (Type: %d)",
+               event->error_handle->error_type);
+    }
     break;
 
   default:
@@ -225,16 +232,50 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base,
  * @return esp_err_t 返回 ESP_OK 表示启动成功
  */
 esp_err_t esp_mqtt_app_start(const char *broker_uri) {
+  // 增加延时，确保 PPP 链路完全稳定后再启动 MQTT
+  // 4G 拨号后，网络栈和 DNS 可能需要几秒钟才能完全可用
+  ESP_LOGI(TAG, "正在等待网络和 DNS 稳定 (5秒)...");
+  vTaskDelay(pdMS_TO_TICKS(5000));
+
+  // 检查网络状态 (调试用)
+  esp_netif_t *netif = esp_netif_get_handle_from_ifkey("PPP_DEF");
+  if (netif) {
+    esp_netif_ip_info_t ip_info;
+    if (esp_netif_get_ip_info(netif, &ip_info) == ESP_OK) {
+      ESP_LOGI(TAG, "当前 PPP 接口 IP: " IPSTR, IP2STR(&ip_info.ip));
+    } else {
+      ESP_LOGW(TAG, "无法获取 PPP 接口 IP 信息");
+    }
+  } else {
+    ESP_LOGW(TAG, "未找到 PPP 网络接口句柄");
+  }
+
   // 确保 TopicBuff 已经被初始化
   MQTT_Init();
 
   // 配置 MQTT 客户端参数
+  // 使用 OneNET Studio 标准域名 mqtts.heclouds.com，配合 1883 (TCP) 或 8883
+  // (TLS) 【修正】根据日志 "couldn't get hostname for
+  // :mqtts.heclouds.com"，必须带上 mqtt:// 协议头
+  char target_uri[128];
+  snprintf(target_uri, sizeof(target_uri), "mqtt://%s:%d", MQTT_SERVER,
+           MQTT_PORT);
+
+  ESP_LOGI(TAG, "正在初始化 MQTT 客户端, URI: %s", target_uri);
+
   esp_mqtt_client_config_t mqtt_cfg = {
-      .broker.address.uri = broker_uri,       // 服务器地址
+      .broker.address.uri = target_uri,       // 使用完整的 URI 格式
       .credentials.client_id = GW_DEVICENAME, // 客户端ID (DeviceName)
       .credentials.username = GW_PRODUCTID,   // 用户名 (ProductID)
-      // 将刚才 MQTT_Init 中计算出来的鉴权密码传入
       .credentials.authentication.password = Mqtt_Password,
+      .session.protocol_ver = MQTT_PROTOCOL_V_3_1_1, // 明确使用 MQTT 3.1.1
+      .session.keepalive = 120,    // 设置 KeepAlive 为 120 秒
+      .network.timeout_ms = 20000, // 增加网络超时时间到 20 秒
+      .network.reconnect_timeout_ms = 5000, // 重连间隔
+      .buffer.size = 8192,                  // 极限增大读缓冲区 (8KB)
+      .buffer.out_size = 4096,              // 写缓冲区
+      .task.stack_size =
+          8192, // 修正：在 ESP-IDF v5.x 中，栈大小字段为 .task.stack_size
   };
 
   // 初始化客户端
@@ -251,6 +292,14 @@ esp_err_t esp_mqtt_app_start(const char *broker_uri) {
     ESP_LOGE(TAG, "Failed to register MQTT event: %s", esp_err_to_name(err));
     return err;
   }
+
+  // 为排查连接问题，开启全方位底层驱动调试日志
+  esp_log_level_set("mqtt_client", ESP_LOG_DEBUG);
+  esp_log_level_set("transport_tcp", ESP_LOG_DEBUG);
+  esp_log_level_set("transport", ESP_LOG_DEBUG);
+  esp_log_level_set("outbox", ESP_LOG_DEBUG);
+  esp_log_level_set("esp-tls", ESP_LOG_DEBUG);
+  esp_log_level_set("mqtt_common", ESP_LOG_DEBUG);
 
   // 启动客户端，开始连接服务器
   err = esp_mqtt_client_start(mqtt_client);
@@ -289,9 +338,28 @@ void esp_mqtt_app_stop(void) {
 int esp_mqtt_publish_msg(const char *topic, const char *data, int len, int qos,
                          int retain) {
   if (mqtt_client == NULL) {
-    ESP_LOGE(TAG, "MQTT client is not initialized");
+    ESP_LOGE(TAG, "MQTT 客户端未初始化");
     return -1;
   }
+
+  // 检查连接状态
+  if (!(SysCB.SysEventFlag & CONNECT_MQTT)) {
+    ESP_LOGW(TAG, "MQTT 未连接，丢弃主题 [%s] 的消息", topic);
+    return -3;
+  }
+
+  // 安全检查：如果正在进行 OTA 升级，拦截所有发布请求
+  // 这可以防止在上报过程中因 4G 网络拥塞导致的 transport 错误
+  if (SysCB.SysEventFlag & OTA_RUNNING) {
+    ESP_LOGW(TAG, "OTA 正在运行，拦截主题 [%s] 的发布请求", topic);
+    return -2;
+  }
+
   // 调用底层 API 发布消息
-  return esp_mqtt_client_publish(mqtt_client, topic, data, len, qos, retain);
+  int msg_id =
+      esp_mqtt_client_publish(mqtt_client, topic, data, len, qos, retain);
+  if (msg_id < 0) {
+    ESP_LOGE(TAG, "MQTT 发布失败, topic=%s, err=%d", topic, msg_id);
+  }
+  return msg_id;
 }

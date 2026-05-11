@@ -11,13 +11,14 @@
 // 目前分配:
 // UART0: 分配给 K210 模块 (GPIO 9, 10)
 // UART1: 分配给土壤传感器 (GPIO 32, 33)
-// UART2: 分配给 Cat1 模块 (GPIO 16, 17)
+// UART2: 分配给 Cat1 模块 (GPIO 4, 5)
 // ==========================================
 #define UART_NUM_SOIL UART_NUM_1
 #define UART_NUM_CAT1 UART_NUM_2
 #define UART_NUM_K210 UART_NUM_0
 #include "app_config.h"
-#define CAT1_APN "internet" // 默认 APN，可根据 SIM 卡修改为 cmnet 等
+// 默认 APN，通常物联网卡使用 internet，移动 cmnet，联通 3gnet
+#define CAT1_APN "3gnet"
 
 // 串口接收缓冲区大小
 #define UART_BUF_SIZE (1024 * 4)
@@ -29,7 +30,7 @@
  *
  * @return esp_err_t
  */
-void Cat1_PPPoS_Init(void);
+esp_err_t Cat1_PPPoS_Init(void);
 
 /**
  * @brief 通过 Cat1/WiFi 串口发送数据

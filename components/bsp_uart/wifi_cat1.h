@@ -64,16 +64,28 @@ void WiFi_Cat1_SubOnline(char, char); // 函数说明，子设备上下线
 void WiFi_Cat1_SubDataPost(unsigned char *); // 函数说明，子设备数据上传
 void WiFi_Cat1_GatewayDataPost(float temp, float hum,
                                float lux); // 函数说明，网关数据上传
-void WiFi_Cat1_StartOTA(const char *url,
+void WiFi_Cat1_SoilDataPost(float temp, float humi, float ec, float n, float p,
+                            float k); // 函数说明，土壤传感器固定上报
+void WiFi_Cat1_AdcDataPost(float adc1, float adc2,
+                           float adc3); // 函数说明，ADC数据固定上报
+void WiFi_Cat1_AllDataPost(float air_temp, float air_hum, float air_lux,
+                           float soil_temp, float soil_humi, float soil_ec,
+                           float soil_n, float soil_p, float soil_k, float adc1,
+                           float adc2,
+                           float adc3); // 函数说明，所有传感器数据合并上报
+void WiFi_Cat1_ReportVersion(const char *id); // 函数说明，上报当前版本号
+void WiFi_Cat1_StartOTA(const char *url, const char *token,
                         uint8_t ota_staflag); // 函数说明，开始OTA下载
+void Studio_OTA_CheckTask(void); // 函数说明，新版 Studio OTA 检查
 void WiFi_Cat1_PropertyVersion(uint8_t); // 函数说明，向服务器上传版本号
 void WiFi_Cat1_CheckOTATask(uint8_t); // 函数说明，查询是否有OTA任务
 void WiFi_Cat1_OTADownload(uint16_t, uint16_t,
                            uint8_t); // 函数说明，OTA下载新版本程序数据
+void start_Cat1Task(void *argument); // 函数说明，4G Cat1 后台任务
 
 typedef struct {
   uint16_t len; // 包体长度（字节数），仅指 data[] 实际有效数据长度
-  uint32_t page_index; // 写入W25Qxx的页索引（按目标分区+当前分片计算）
+  uint32_t page_index; // 写入FLASH的页索引（按目标分区+当前分片计算）
   uint8_t ota_staflag; // 0：网关OTA；1：子设备OTA，用于区分写入区域
   uint8_t is_last; // 是否为最后一个分片：1表示最后一片（写完做收尾）
   uint8_t data[]; // 变长数组，紧随结构体的有效数据载荷（零拷贝传递）

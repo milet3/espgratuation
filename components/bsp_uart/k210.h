@@ -21,12 +21,19 @@ int k210_uart_send(const uint8_t *data, int len);
 
 /**
  * @brief 从 K210 读取数据
- *
+ * 
  * @param buf 接收缓冲区指针
  * @param len 期望读取的长度
  * @param timeout_ms 超时时间（毫秒）
  * @return int 实际读取的字节数
  */
 int k210_uart_read(uint8_t *buf, int len, uint32_t timeout_ms);
+
+/**
+ * @brief 上报害虫识别结果到云端
+ * 
+ * @param status 0: 无害虫, 1: 发现害虫
+ */
+void k210_report_pest_status(uint8_t status);
 
 #endif // __K210_H__

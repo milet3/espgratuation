@@ -8,7 +8,7 @@ static const char *TAG = "BSP_LED";
 void bsp_led_init(void) {
   // 配置 LED 引脚为推挽输出
   gpio_config_t io_conf = {
-      .pin_bit_mask = (1ULL << LED_RUN_PIN) | (1ULL << LED_LORA_PIN) |
+      .pin_bit_mask = (1ULL << LED_RUN_PIN) | // (1ULL << LED_LORA_PIN) |
                       (1ULL << LED_NET_PIN),
       .mode = GPIO_MODE_OUTPUT,
       .pull_up_en = GPIO_PULLUP_DISABLE,
@@ -19,9 +19,9 @@ void bsp_led_init(void) {
 
   // 默认关闭所有 LED (假设低电平点亮，则初始设为高)
   gpio_set_level(LED_RUN_PIN, 1);
-  gpio_set_level(LED_LORA_PIN, 1);
+  // gpio_set_level(LED_LORA_PIN, 1);
   gpio_set_level(LED_NET_PIN, 1);
 
-  ESP_LOGI(TAG, "LEDs initialized: RUN(IO%d), LORA(IO%d), NET(IO%d)",
-           LED_RUN_PIN, LED_LORA_PIN, LED_NET_PIN);
+  ESP_LOGI(TAG, "LEDs initialized: RUN(IO%d), NET(IO%d)", // LORA(IO%d), 
+           LED_RUN_PIN, LED_NET_PIN);
 }

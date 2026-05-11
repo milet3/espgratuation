@@ -1,11 +1,12 @@
 #ifndef __APP_CONFIG_H__
 #define __APP_CONFIG_H__
 
+#include "driver/gpio.h"
 #include <stdint.h>
 
 // 系统电源控制
-#define LORA_POWER_PIN GPIO_NUM_6
-#define EM_POWER_PIN GPIO_NUM_15 // 原 IO7 被 LED1 占用，改为 IO15
+#define LORA_POWER_PIN GPIO_NUM_7 // 修改：避开 LED_RUN_PIN(IO6)
+#define EM_POWER_PIN GPIO_NUM_8   // 修改：避开 CAT1_NET_STA_PIN(IO15)
 
 // Maix Bit K210 模块 (UART 接口 + 控制)
 #define K210_TX_PIN GPIO_NUM_13   // 接 K210_RX
@@ -26,11 +27,11 @@
 #define LORA_RXEN_PIN GPIO_NUM_12
 
 // 4G EC800 模块 (UART 接口 + 控制)
-#define CAT1_TX_PIN GPIO_NUM_17
-#define CAT1_RX_PIN GPIO_NUM_16
-#define CAT1_POWER_PIN GPIO_NUM_4     // PWRKEY
-#define CAT1_POWER_STA_PIN GPIO_NUM_5 // STATUS
-#define CAT1_NET_STA_PIN GPIO_NUM_15  // NETLIGHT
+#define CAT1_TX_PIN GPIO_NUM_5 // 对应原理图 IO18 (避开调试串口)
+#define CAT1_RX_PIN GPIO_NUM_4 // 对应原理图 IO17 (避开调试串口)
+#define CAT1_POWER_PIN -1     // 原理图 EN 已硬件上拉 3V3，无需控制
+#define CAT1_POWER_STA_PIN -1 // 原理图未引出反馈引脚
+#define CAT1_NET_STA_PIN -1   // 原理图未引出反馈引脚
 
 // 传感器 I2C 接口 (BH1750 光强 & SHT30 温湿度)
 #define SENSOR_I2C_SDA GPIO_NUM_48
@@ -45,38 +46,38 @@
 #define SOIL_UART_PORT UART_NUM_1
 
 // 系统指示灯 (匹配原理图 LED1, LED4, LED5)
-#define LED_RUN_PIN GPIO_NUM_6   // 系统运行指示灯 (LED1)
-#define LED_LORA_PIN GPIO_NUM_18 // LoRa 通讯指示灯 (LED4)
-#define LED_NET_PIN GPIO_NUM_47  // 网络状态指示灯 (LED5)
+#define LED_RUN_PIN GPIO_NUM_6 // 系统运行指示灯 (LED1)
+// #define LED_LORA_PIN GPIO_NUM_18 // LoRa 通讯指示灯 (LED4)
+#define LED_NET_PIN GPIO_NUM_47 // 网络状态指示灯 (LED5)
 
 // 其他功能
 
 /* USER CODE BEGIN Private defines */
-#define SUN_NUMBER 3 // 使用几个节点板
+#define SUN_NUMBER 3 // 使用几个节点板 (1网关+3子节点，总共4个元素)
 
-#define MQTT_SERVER "mqtts.heclouds.com" // MQTT服务器域名
+#define MQTT_SERVER "mqtts.heclouds.com" // 恢复域名连接，配合手动 DNS 设置
 #define MQTT_PORT 1883                   // MQTT服务器端口号
 
 #define OTA_SERVER "iot-api.heclouds.com" // OTA服务器域名
 #define OTA_PORT 80                       // OTA服务器端口
 
-#define UNIX "1861891199" // token运算时的过期UNIX时间戳
-#define Accesskey                                                              \
-  "jT9gyXrxk+LkJlxb/nEkL+nAZiD+5EacXAyLb9eskQg/"                               \
-  "MMI4qXcNNgZUUU1+rlwV97S1ZG6Hyq3prCt5MvoC3g==" // 用户Accesskey
-#define USERID "27124"                           // 用户ID
+#define UNIX "1861891199"          // token运算时的过期UNIX时间戳
+#define CURRENT_FW_VERSION "1.0.0" // 当前固件版本号 (用于 OTA 匹配)
+#define Accesskey "0b5b4ffaac3847ca9fc6bf1d71ac9b9e" // 用户Accesskey
+#define USERID "519184"                              // 用户ID
+#define GATEWAY_VERSION "1.0.0"                      // 网关固件版本号
 
-#define GW_PRODUCTID "Po28fBqti6" // 网关产品ID
+#define GW_PRODUCTID "2gs358kL0T" // 网关产品ID
 #define GW_DEVICENAME "GW001"     // 网关设备名称
 #define GW_DEVICESECRET                                                        \
-  "RmN5a0pGdEdtQzM0NGpxVTZsNVRONkllMGxsb2NwcW0=" // 网关设备密钥
-#define SUB_PRODUCTID "wEzuaN5K2L"               // 子设备产品ID
+  "VjlCSW1EY2hadmlVc1J6dHplUXBtWm9Cd2JRcVpiUjc=" // 网关设备密钥
+#define SUB_PRODUCTID "4dTebRoyvq"               // 子设备产品ID
 #define SUB1_PDEVICENAME "D001"                  // 子设备1设备名称
 #define SUB2_PDEVICENAME "D002"                  // 子设备2设备名称
 #define SUB3_PDEVICENAME "D003"                  // 子设备3设备名称
 
 #define ATTRIBUTE1                                                             \
-  "PowerSwitch_1" // 功能属性1标识符，标识符名称必须和服务器后台设置的完全一样，大小写也必须一样
+  "PestAlarm" // 功能属性1标识符，标识符名称必须和服务器后台设置的完全一样，大小写也必须一样
 #define ATTRIBUTE2                                                             \
   "PowerSwitch_2" // 功能属性2标识符，标识符名称必须和服务器后台设置的完全一样，大小写也必须一样
 #define ATTRIBUTE3                                                             \
@@ -95,6 +96,14 @@
   "ADC_CH2" // 功能属性9标识符，标识符名称必须和服务器后台设置的完全一样，大小写也必须一样
 #define ATTRIBUTE10                                                            \
   "ADC_CH3" // 功能属性10标识符，标识符名称必须和服务器后台设置的完全一样，大小写也必须一样
+#define ATTRIBUTE_SOIL_TEMP "soil_temp" // 土壤温度
+#define ATTRIBUTE_SOIL_HUMI "soil_humi" // 土壤水分
+#define ATTRIBUTE_SOIL_EC "soil_ec"     // 土壤电导率
+#define ATTRIBUTE_SOIL_N "soil_n"       // 土壤氮
+#define ATTRIBUTE_SOIL_P "soil_p"       // 土壤磷
+#define ATTRIBUTE_SOIL_K "soil_k"       // 土壤钾
+#define ATTRIBUTE_FIRMWARE_VER                                                 \
+  "firmware_version" // 固件版本属性标识符 (直连设备 OTA 关键)
 
 /*---------------------------------------------------------------*/
 /*-------------------用于各种系统参数的结构体--------------------*/
@@ -130,7 +139,8 @@ typedef struct {
 #define CONNECT_WIFI ((uint32_t)0x00000004) // WiFi模块连接上服务器事件
 #define CONNECT_CAT1 ((uint32_t)0x00000008) // 4G Cat1模块连接上服务器事件
 #define CONNECT_PING ((uint32_t)0x00000010) // 需要发送MQTT协议PING保活报文事件
-#define OTA_EVENT ((uint32_t)0x00000020) // 需要进行OTA操作事件
+#define OTA_EVENT ((uint32_t)0x00000020)   // 需要进行OTA操作事件
+#define OTA_RUNNING ((uint32_t)0x00000040) // 正在进行OTA下载标志位
 
 /* Event Group bit definitions */
 #define EVG_NET_READY (0x0001U)  // 网络连接上服务器事件
@@ -139,7 +149,7 @@ typedef struct {
 //------------各种外部变量声明，便于其他源文件调用变量-----------//
 extern Sys_CB SysCB; // 外部变量声明，用于各种系统参数的结构体
 extern char DeviceNameBuff[SUN_NUMBER + 1][64]; // 外部变量声明，设备名称数组
-extern char PorductIdBuff[SUN_NUMBER + 1][64]; // 外部变量声明，产品ID数组
+extern char ProductIdBuff[SUN_NUMBER + 1][64]; // 外部变量声明，产品ID数组
 extern Info_CB info; // 外部变量声明，EEPROM内保存信息的结构体
 
 #endif // __APP_CONFIG_H__

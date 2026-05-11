@@ -3,7 +3,7 @@
   "idf.openOcdConfigs": [
     "board/esp32s3-builtin.cfg"
   ],
-  "idf.portWin": "COM3",
+  "idf.portWin": "COM8",
   "idf.currentSetup": "C:\\Users\\Milet\\esp\\v5.5.1\\esp-idf",
   "idf.customExtraVars": {
     "IDF_TARGET": "esp32s3"
@@ -13,5 +13,6 @@
     "--background-index",
     "--query-driver=**",
     "--compile-commands-dir=c:\\Users\\Milet\\Desktop\\ESP32gratuation\\espgratuation\\build"
-  ]
+  ],
+  "idf.flashType": "UART"
 }

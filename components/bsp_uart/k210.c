@@ -4,7 +4,8 @@
 #include "driver/gpio.h"
 #include "driver/uart.h"
 #include "esp_log.h"
-
+#include "esp_mqtt.h"
+#include <string.h>
 
 static const char *TAG = "K210";
 
@@ -51,4 +52,24 @@ int k210_uart_read(uint8_t *buf, int len, uint32_t timeout_ms) {
     return 0;
   }
   return uart_read_bytes(UART_NUM_K210, buf, len, pdMS_TO_TICKS(timeout_ms));
+}
+
+void k210_report_pest_status(uint8_t status) {
+  char temptopic[128];
+  char tempdata[256];
+
+  // OneNet 物模型属性上报主题
+  snprintf(temptopic, sizeof(temptopic), "$sys/%s/%s/thing/property/post",
+           GW_PRODUCTID, GW_DEVICENAME);
+
+  // 构造 JSON 数据包
+  // 使用 app_config.h 中定义的 ATTRIBUTE1 (PestAlarm)
+  snprintf(tempdata, sizeof(tempdata),
+           "{\"id\":\"789\",\"version\":\"1.0\",\"params\":{"
+           "\"%s\":{\"value\":%d}"
+           "}}",
+           ATTRIBUTE1, status);
+
+  esp_mqtt_publish_msg(temptopic, tempdata, strlen(tempdata), 0, 0);
+  ESP_LOGI(TAG, "Pest status reported: %d", status);
 }

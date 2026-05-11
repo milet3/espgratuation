@@ -368,7 +368,7 @@ void LoRa_ActiveEvent(void) {
   // 连接上服务器且不是OTA服务器 且 间隔够3s 且 LoRa_sta是1(传输状态) 且
   // 无OTA时，进入分支
   if ((SysCB.SysEventFlag & CONNECT_MQTT) &&
-      ((HAL_GetTick() - lora.timer) >= 3000) && (lora.sta == 1) &&
+      ((HAL_GetTick() - lora.timer) >= 5000) && (lora.sta == 1) &&
       (lora.Ota == 0)) {
     lora.timer = HAL_GetTick(); // 记录当前时间值
     adr = lora.counter % SUN_NUMBER + 1; // 计算本次需要操作的lora节点从机地址
