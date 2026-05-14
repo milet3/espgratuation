@@ -27,10 +27,11 @@ static esp_netif_t *ap_netif = NULL;
 static void cat1_shutdown_task(void *pvParameters) {
   ESP_LOGI(TAG, "切换WiFi模块连接服务器");
   ESP_LOGI(TAG, "将4G Cat1模块关机");
-  SysCB.SysEventFlag &= ~CONNECT_WIFI; // 清除连接上WiFi服务器事件
-  SysCB.SysEventFlag &= ~CONNECT_OTA;  // 清除连接上OTA服务器事件
-  SysCB.SysEventFlag &= ~CONNECT_CAT1; // 清除4G Cat1模块连接上服务器事件
-  SysCB.SysEventFlag &= ~CONNECT_PING; // 清除需要发送MQTT协议PING保活报文事件
+  // 修正：严禁在此处清除 CONNECT_WIFI，否则会导致上报逻辑切换到错误的 4G AT
+  // 模式 SysCB.SysEventFlag &= ~CONNECT_WIFI;
+  SysCB.SysEventFlag &= ~CONNECT_OTA;
+  SysCB.SysEventFlag &= ~CONNECT_CAT1;
+  SysCB.SysEventFlag &= ~CONNECT_PING;
 
   CAT1_POWER(1);                   // 先拉高
   vTaskDelay(pdMS_TO_TICKS(1500)); // 延时
@@ -115,7 +116,8 @@ static void event_handler(void *arg, esp_event_base_t event_base,
         wifi_state_cb(WIFI_STATE_CONNECTED); // 调用状态回调函数，通知连接成功
 
       // 安全地处理硬件操作：不阻塞事件任务
-      if (CAT1_POWER_STA == 0) {
+      // 修正：只有当 CAT1 已经上电时才尝试关机，并且增加引脚有效性检查
+      if (CAT1_POWER_STATE_PIN >= 0) {
         xTaskCreate(cat1_shutdown_task, "cat1_off", 2048, NULL, 5, NULL);
       }
       break;

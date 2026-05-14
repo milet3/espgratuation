@@ -17,8 +17,8 @@ typedef struct {
 } Token_CB;
 
 // 外部引用的 MQTT 变量
-extern char TopicBuff[7][128]; // 二维数组，存放需要订阅的topic字符串
-extern char TopicNum;          // 需要订阅的数据topic数量
+extern char TopicBuff[10][128]; // 二维数组，存放需要订阅的topic字符串
+extern char TopicNum;           // 需要订阅的数据topic数量
 extern char
     Mqtt_Password[512]; // 存放计算出来的 MQTT 鉴权密码 (扩大到 512 字节防截断)
 
