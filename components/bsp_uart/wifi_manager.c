@@ -11,11 +11,13 @@
 #include "lwip/inet.h"
 #include "lwip/sockets.h"
 #include "wifi_cat1.h"
+#include <stdarg.h>
 #include <ctype.h>
 #include <errno.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 
@@ -25,6 +27,13 @@
 #define CAPTIVE_DNS_PORT 53
 #define CAPTIVE_DNS_BUF_SIZE 512
 #define CAPTIVE_PORTAL_IP "192.168.4.1"
+#define WIFI_SSID_MAX_LEN 32
+#define WIFI_PASSWORD_MAX_LEN 64
+#define WIFI_URL_ENCODED_SSID_BUF_SIZE (WIFI_SSID_MAX_LEN * 3 + 1)
+#define WIFI_URL_ENCODED_PASSWORD_BUF_SIZE (WIFI_PASSWORD_MAX_LEN * 3 + 1)
+#define WIFI_FORM_BUF_SIZE 384
+#define WIFI_SCAN_MAX_AP 20
+#define WIFI_SCAN_PAGE_BUF_SIZE 8192
 static int sta_connect_count = 0; // 连接次数
 
 static p_wifi_state_callback wifi_state_cb = NULL; // WiFi 状态回调函数
@@ -36,6 +45,7 @@ static bool is_ap_active = false;
 static bool pending_credentials_valid = false;
 static wifi_credentials_t pending_credentials = {0};
 static TaskHandle_t dns_task_handle = NULL;
+static TaskHandle_t wifi_cleanup_task_handle = NULL;
 static volatile bool dns_server_running = false;
 static const char captive_portal_url[] = "http://" CAPTIVE_PORTAL_IP "/";
 
@@ -43,6 +53,22 @@ static esp_netif_t *sta_netif = NULL;
 static esp_netif_t *ap_netif = NULL;
 
 static void wifi_connected_cleanup_task(void *pvParameters);
+
+static void save_pending_wifi_credentials(void) {
+  if (!pending_credentials_valid) {
+    return;
+  }
+
+  pending_credentials.magic = WIFI_CREDENTIAL_MAGIC;
+  pending_credentials.ssid[sizeof(pending_credentials.ssid) - 1] = '\0';
+  pending_credentials.password[sizeof(pending_credentials.password) - 1] = '\0';
+
+  EEprom_WriteData(WIFI_CREDENTIAL_KEY, &pending_credentials,
+                   sizeof(pending_credentials));
+  ESP_LOGI(TAG, "Saved WiFi credentials to EEprom. SSID:%s",
+           pending_credentials.ssid);
+  pending_credentials_valid = false;
+}
 
 static void cat1_shutdown_task(void *pvParameters) {
   ESP_LOGI(TAG, "切换WiFi模块连接服务器");
@@ -132,19 +158,15 @@ static void event_handler(void *arg, esp_event_base_t event_base,
       sta_connect_count = 0;
       is_sta_connected = true;            // 标记为已连接
       SysCB.SysEventFlag |= CONNECT_WIFI; // 置位连接WiFi成功事件
-      if (pending_credentials_valid) {
-        EEprom_WriteData(WIFI_CREDENTIAL_KEY, &pending_credentials,
-                         sizeof(pending_credentials));
-        pending_credentials_valid = false;
-      }
+      save_pending_wifi_credentials();
       if (wifi_state_cb)
         wifi_state_cb(WIFI_STATE_CONNECTED); // 调用状态回调函数，通知连接成功
 
       // 安全地处理硬件操作：不阻塞事件任务
       // 修正：只有当 CAT1 已经上电时才尝试关机，并且增加引脚有效性检查
-      if (is_ap_active) {
+      if (is_ap_active && wifi_cleanup_task_handle == NULL) {
         xTaskCreate(wifi_connected_cleanup_task, "wifi_cleanup", 3072, NULL, 5,
-                    NULL);
+                    &wifi_cleanup_task_handle);
       }
 
       if (CAT1_POWER_STATE_PIN >= 0) {
@@ -229,7 +251,12 @@ esp_err_t wifi_manager_connect(const char *ssid, const char *password) {
            ssid);
   snprintf(pending_credentials.password,
            sizeof(pending_credentials.password), "%s", password);
-  pending_credentials_valid = true;
+
+  wifi_credentials_t saved_credentials = {0};
+  pending_credentials_valid =
+      !wifi_manager_load_saved_config(&saved_credentials) ||
+      strcmp(saved_credentials.ssid, pending_credentials.ssid) != 0 ||
+      strcmp(saved_credentials.password, pending_credentials.password) != 0;
 
   sta_connect_count = 0; // 初始化连接次数为0
   wifi_config_t wifi_config = {
@@ -457,22 +484,189 @@ static void start_captive_dns_server(void) {
 
 static void stop_captive_dns_server(void) { dns_server_running = false; }
 
-/* 网页 HTML 内容 */
-static const char *html_page =
-    "<!DOCTYPE html>"
-    "<html><head><meta charset=\"UTF-8\"><title>WiFi配网</title></head>"
-    "<body><h2>ESP32 WiFi配置</h2>"
-    "<form action=\"/submit\" method=\"post\">"
-    "WiFi名称(SSID):<br><input type=\"text\" name=\"ssid\" required><br><br>"
-    "WiFi密码(Password):<br><input type=\"password\" name=\"password\"><br><br>"
-    "<input type=\"submit\" value=\"连接\">"
-    "</form></body></html>";
+static const char *authmode_to_text(wifi_auth_mode_t authmode) {
+  switch (authmode) {
+  case WIFI_AUTH_OPEN:
+    return "OPEN";
+  case WIFI_AUTH_WEP:
+    return "WEP";
+  case WIFI_AUTH_WPA_PSK:
+    return "WPA";
+  case WIFI_AUTH_WPA2_PSK:
+    return "WPA2";
+  case WIFI_AUTH_WPA_WPA2_PSK:
+    return "WPA/WPA2";
+  case WIFI_AUTH_WPA2_ENTERPRISE:
+    return "WPA2-ENT";
+  case WIFI_AUTH_WPA3_PSK:
+    return "WPA3";
+  case WIFI_AUTH_WPA2_WPA3_PSK:
+    return "WPA2/WPA3";
+  default:
+    return "SEC";
+  }
+}
+
+static void html_append_escaped(char *dst, size_t dst_size, const char *src) {
+  size_t len = strlen(dst);
+
+  while (*src && len + 1 < dst_size) {
+    const char *escaped = NULL;
+    switch (*src) {
+    case '&':
+      escaped = "&amp;";
+      break;
+    case '<':
+      escaped = "&lt;";
+      break;
+    case '>':
+      escaped = "&gt;";
+      break;
+    case '"':
+      escaped = "&quot;";
+      break;
+    case '\'':
+      escaped = "&#39;";
+      break;
+    default:
+      dst[len++] = *src++;
+      dst[len] = '\0';
+      continue;
+    }
+
+    size_t escaped_len = strlen(escaped);
+    if (len + escaped_len >= dst_size) {
+      break;
+    }
+    memcpy(dst + len, escaped, escaped_len);
+    len += escaped_len;
+    dst[len] = '\0';
+    src++;
+  }
+}
+
+static size_t html_append(char *dst, size_t dst_size, const char *fmt, ...) {
+  size_t len = strlen(dst);
+  if (len >= dst_size) {
+    return len;
+  }
+
+  va_list args;
+  va_start(args, fmt);
+  vsnprintf(dst + len, dst_size - len, fmt, args);
+  va_end(args);
+  return strlen(dst);
+}
+
+static uint16_t scan_wifi_aps(wifi_ap_record_t *ap_records,
+                              uint16_t max_records) {
+  if (ap_records == NULL || max_records == 0) {
+    return 0;
+  }
+
+  wifi_scan_config_t scan_config = {
+      .ssid = NULL,
+      .bssid = NULL,
+      .channel = 0,
+      .show_hidden = false,
+      .scan_type = WIFI_SCAN_TYPE_ACTIVE,
+  };
+
+  esp_err_t err = esp_wifi_scan_start(&scan_config, true);
+  if (err != ESP_OK) {
+    ESP_LOGW(TAG, "WiFi scan failed: %s", esp_err_to_name(err));
+    return 0;
+  }
+
+  uint16_t ap_count = max_records;
+  err = esp_wifi_scan_get_ap_records(&ap_count, ap_records);
+  if (err != ESP_OK) {
+    ESP_LOGW(TAG, "Failed to get WiFi scan records: %s", esp_err_to_name(err));
+    return 0;
+  }
+
+  return ap_count;
+}
+
+static esp_err_t send_wifi_config_page(httpd_req_t *req) {
+  wifi_ap_record_t *ap_records =
+      calloc(WIFI_SCAN_MAX_AP, sizeof(wifi_ap_record_t));
+  char *page = calloc(1, WIFI_SCAN_PAGE_BUF_SIZE);
+  if (ap_records == NULL || page == NULL) {
+    free(ap_records);
+    free(page);
+    httpd_resp_send_500(req);
+    return ESP_ERR_NO_MEM;
+  }
+
+  uint16_t ap_count = scan_wifi_aps(ap_records, WIFI_SCAN_MAX_AP);
+
+  html_append(page, WIFI_SCAN_PAGE_BUF_SIZE,
+              "<!DOCTYPE html><html><head><meta charset=\"UTF-8\">"
+              "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
+              "<title>WiFi配网</title>"
+              "<style>"
+              "body{font-family:Arial,\"Microsoft YaHei\",sans-serif;margin:24px;"
+              "background:#f6f7f9;color:#1f2933;}"
+              "h2{margin:0 0 18px;font-size:24px;}"
+              "label{display:block;margin:14px 0 6px;font-weight:600;}"
+              "select,input,button{box-sizing:border-box;width:100%%;font-size:16px;"
+              "padding:10px;border:1px solid #ccd3dc;border-radius:6px;}"
+              "button{margin-top:18px;background:#1677ff;color:white;border:0;}"
+              ".hint{font-size:13px;color:#637083;margin-top:6px;line-height:1.5;}"
+              ".wrap{max-width:460px;margin:auto;}"
+              "</style></head><body><div class=\"wrap\">"
+              "<h2>ESP32 WiFi配置</h2>"
+              "<form action=\"/submit\" method=\"post\">"
+              "<label for=\"ssid_select\">附近WiFi</label>"
+              "<select id=\"ssid_select\" name=\"ssid_select\">");
+
+  if (ap_count == 0) {
+    html_append(page, WIFI_SCAN_PAGE_BUF_SIZE,
+                "<option value=\"\">未扫描到WiFi</option>");
+  } else {
+    for (uint16_t i = 0; i < ap_count; i++) {
+      char ssid[WIFI_SSID_MAX_LEN + 1] = {0};
+      snprintf(ssid, sizeof(ssid), "%s", (char *)ap_records[i].ssid);
+
+      html_append(page, WIFI_SCAN_PAGE_BUF_SIZE, "<option value=\"");
+      html_append_escaped(page, WIFI_SCAN_PAGE_BUF_SIZE, ssid);
+      html_append(page, WIFI_SCAN_PAGE_BUF_SIZE, "\">");
+      html_append_escaped(page, WIFI_SCAN_PAGE_BUF_SIZE, ssid);
+      html_append(page, WIFI_SCAN_PAGE_BUF_SIZE, " (%ddBm %s)</option>",
+                  ap_records[i].rssi, authmode_to_text(ap_records[i].authmode));
+    }
+  }
+
+  html_append(page, WIFI_SCAN_PAGE_BUF_SIZE,
+              "</select><div class=\"hint\">列表由ESP32扫描生成。若目标WiFi未出现，"
+              "可在下面手动输入。</div>"
+              "<label for=\"ssid\">手动SSID</label>"
+              "<input id=\"ssid\" type=\"text\" name=\"ssid\" maxlength=\"32\" "
+              "placeholder=\"可选，填写后优先使用\">"
+              "<label for=\"password\">WiFi密码</label>"
+              "<input id=\"password\" type=\"password\" name=\"password\" "
+              "maxlength=\"64\" placeholder=\"开放网络可留空\">"
+              "<button type=\"submit\">连接</button>"
+              "</form><div class=\"hint\">刷新页面可重新扫描附近WiFi。</div>"
+              "</div></body></html>");
+
+  httpd_resp_set_type(req, "text/html; charset=utf-8");
+  httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+  httpd_resp_send(req, page, HTTPD_RESP_USE_STRLEN);
+  free(ap_records);
+  free(page);
+  return ESP_OK;
+}
 
 /* GET / 响应主页 */
 static esp_err_t root_get_handler(httpd_req_t *req) {
-  httpd_resp_set_type(req, "text/html; charset=utf-8");
-  httpd_resp_send(req, html_page, HTTPD_RESP_USE_STRLEN);
-  return ESP_OK;
+  return send_wifi_config_page(req);
+}
+
+/* 手机系统会访问这些探测地址；返回配网页可触发 captive portal 弹窗。 */
+static esp_err_t captive_probe_get_handler(httpd_req_t *req) {
+  return root_get_handler(req);
 }
 
 /* 提取表单数据的辅助函数 */
@@ -505,13 +699,48 @@ static void url_decode(char *dst, const char *src) {
   *dst++ = '\0';
 }
 
+static void form_value_copy(char *dst, size_t dst_size, const char *src,
+                            size_t src_len) {
+  if (dst_size == 0) {
+    return;
+  }
+
+  size_t copy_len = src_len;
+  if (copy_len >= dst_size) {
+    copy_len = dst_size - 1;
+  }
+
+  memcpy(dst, src, copy_len);
+  dst[copy_len] = '\0';
+}
+
+static void form_get_value(char *dst, size_t dst_size, const char *form,
+                           const char *name) {
+  char pattern[32] = {0};
+  snprintf(pattern, sizeof(pattern), "%s=", name);
+
+  char *value_start = strstr(form, pattern);
+  if (value_start == NULL) {
+    return;
+  }
+
+  value_start += strlen(pattern);
+  char *value_end = strchr(value_start, '&');
+  if (value_end != NULL) {
+    form_value_copy(dst, dst_size, value_start, value_end - value_start);
+  } else {
+    form_value_copy(dst, dst_size, value_start, strlen(value_start));
+  }
+}
+
 /* POST /submit 处理提交的WiFi信息 */
 static esp_err_t submit_post_handler(httpd_req_t *req) {
-  char buf[100];
-  int ret, remaining = req->content_len;
+  char buf[WIFI_FORM_BUF_SIZE];
+  int received = 0;
+  int remaining = req->content_len;
 
   if (remaining >= sizeof(buf)) {
-    httpd_resp_send_500(req);
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "form data too large");
     return ESP_FAIL;
   }
   if (remaining <= 0) {
@@ -519,46 +748,39 @@ static esp_err_t submit_post_handler(httpd_req_t *req) {
     return ESP_FAIL;
   }
 
-  if ((ret = httpd_req_recv(req, buf, remaining)) <= 0) {
-    if (ret == HTTPD_SOCK_ERR_TIMEOUT) {
-      httpd_resp_send_408(req);
+  while (remaining > 0) {
+    int ret = httpd_req_recv(req, buf + received, remaining);
+    if (ret <= 0) {
+      if (ret == HTTPD_SOCK_ERR_TIMEOUT) {
+        continue;
+      }
+      return ESP_FAIL;
     }
-    return ESP_FAIL;
+    received += ret;
+    remaining -= ret;
   }
-  buf[ret] = '\0';
+  buf[received] = '\0';
 
   ESP_LOGI(TAG, "Received form data: %s", buf);
 
-  char ssid_raw[32] = {0};
-  char password_raw[64] = {0};
-  char ssid[32] = {0};
-  char password[64] = {0};
+  char ssid_select_raw[WIFI_URL_ENCODED_SSID_BUF_SIZE] = {0};
+  char ssid_raw[WIFI_URL_ENCODED_SSID_BUF_SIZE] = {0};
+  char password_raw[WIFI_URL_ENCODED_PASSWORD_BUF_SIZE] = {0};
+  char ssid_select[WIFI_SSID_MAX_LEN + 1] = {0};
+  char ssid[WIFI_SSID_MAX_LEN + 1] = {0};
+  char password[WIFI_PASSWORD_MAX_LEN + 1] = {0};
 
-  // 简单解析 ssid=...&password=...
-  char *ssid_start = strstr(buf, "ssid=");
-  if (ssid_start) {
-    ssid_start += 5;
-    char *ssid_end = strchr(ssid_start, '&');
-    if (ssid_end) {
-      strncpy(ssid_raw, ssid_start, ssid_end - ssid_start);
-    } else {
-      strcpy(ssid_raw, ssid_start);
-    }
-  }
+  form_get_value(ssid_select_raw, sizeof(ssid_select_raw), buf, "ssid_select");
+  form_get_value(ssid_raw, sizeof(ssid_raw), buf, "ssid");
+  form_get_value(password_raw, sizeof(password_raw), buf, "password");
 
-  char *pwd_start = strstr(buf, "password=");
-  if (pwd_start) {
-    pwd_start += 9;
-    char *pwd_end = strchr(pwd_start, '&');
-    if (pwd_end) {
-      strncpy(password_raw, pwd_start, pwd_end - pwd_start);
-    } else {
-      strcpy(password_raw, pwd_start);
-    }
-  }
-
+  url_decode(ssid_select, ssid_select_raw);
   url_decode(ssid, ssid_raw);
   url_decode(password, password_raw);
+
+  if (strlen(ssid) == 0 && strlen(ssid_select) > 0) {
+    snprintf(ssid, sizeof(ssid), "%s", ssid_select);
+  }
 
   if (strlen(ssid) == 0) {
     httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "ssid is empty");
@@ -591,6 +813,40 @@ static const httpd_uri_t submit_uri = {.uri = "/submit",
                                        .handler = submit_post_handler,
                                        .user_ctx = NULL};
 
+static const httpd_uri_t android_probe_uri = {
+    .uri = "/generate_204",
+    .method = HTTP_GET,
+    .handler = captive_probe_get_handler,
+    .user_ctx = NULL};
+
+static const httpd_uri_t android_probe_uri_2 = {
+    .uri = "/gen_204",
+    .method = HTTP_GET,
+    .handler = captive_probe_get_handler,
+    .user_ctx = NULL};
+
+static const httpd_uri_t ios_probe_uri = {.uri = "/hotspot-detect.html",
+                                          .method = HTTP_GET,
+                                          .handler = captive_probe_get_handler,
+                                          .user_ctx = NULL};
+
+static const httpd_uri_t apple_probe_uri = {.uri = "/library/test/success.html",
+                                            .method = HTTP_GET,
+                                            .handler = captive_probe_get_handler,
+                                            .user_ctx = NULL};
+
+static const httpd_uri_t windows_probe_uri = {
+    .uri = "/connecttest.txt",
+    .method = HTTP_GET,
+    .handler = captive_probe_get_handler,
+    .user_ctx = NULL};
+
+static const httpd_uri_t windows_probe_uri_2 = {
+    .uri = "/ncsi.txt",
+    .method = HTTP_GET,
+    .handler = captive_probe_get_handler,
+    .user_ctx = NULL};
+
 static const httpd_uri_t portal_uri = {.uri = "/*",
                                        .method = HTTP_GET,
                                        .handler = root_get_handler,
@@ -600,6 +856,7 @@ static const httpd_uri_t portal_uri = {.uri = "/*",
 static httpd_handle_t start_webserver(void) {
   httpd_config_t config = HTTPD_DEFAULT_CONFIG();
   config.uri_match_fn = httpd_uri_match_wildcard;
+  config.max_uri_handlers = 12;
   httpd_handle_t server = NULL;
 
   ESP_LOGI(TAG, "Starting web server on port: '%d'", config.server_port);
@@ -607,6 +864,12 @@ static httpd_handle_t start_webserver(void) {
     ESP_LOGI(TAG, "Registering URI handlers");
     httpd_register_uri_handler(server, &root_uri);
     httpd_register_uri_handler(server, &submit_uri);
+    httpd_register_uri_handler(server, &android_probe_uri);
+    httpd_register_uri_handler(server, &android_probe_uri_2);
+    httpd_register_uri_handler(server, &ios_probe_uri);
+    httpd_register_uri_handler(server, &apple_probe_uri);
+    httpd_register_uri_handler(server, &windows_probe_uri);
+    httpd_register_uri_handler(server, &windows_probe_uri_2);
     httpd_register_uri_handler(server, &portal_uri);
     return server;
   }
@@ -636,6 +899,7 @@ static void wifi_connected_cleanup_task(void *pvParameters) {
   }
 
   is_ap_active = false;
+  wifi_cleanup_task_handle = NULL;
   ESP_LOGI(TAG, "STA connected, AP provisioning stopped");
   vTaskDelete(NULL);
 }

@@ -232,12 +232,14 @@ void app_main(void) {
   wifi_set_state_callback(wifi_state_callback); // 注册状态回调
 
   wifi_credentials_t saved_wifi = {0};
+  ESP_LOGI("MAIN", "正在读取历史 WiFi 配置...");
   if (wifi_manager_load_saved_config(&saved_wifi)) {
-    ESP_LOGI("MAIN", "Found saved WiFi SSID: %s, connecting directly",
+    ESP_LOGI("MAIN", "读取到历史 WiFi 配置，SSID: %s，跳过 AP 配网",
              saved_wifi.ssid);
     wifi_manager_connect(saved_wifi.ssid, saved_wifi.password);
   } else {
-    ESP_LOGI("MAIN", "No saved WiFi credentials, starting AP provisioning");
+    ESP_LOGI("MAIN",
+             "未读取到历史 WiFi 配置，启动 AP 配网: SSID=ESP32_Config");
     wifi_manager_start_ap_provisioning("ESP32_Config", "12345678");
   }
 
