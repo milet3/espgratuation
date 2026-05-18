@@ -2,83 +2,109 @@
 #include "app_config.h"
 #include "bsp_uart.h"
 #include "cJSON.h"
+#include "driver/uart.h"
 #include "esp_crt_bundle.h"
 #include "esp_http_client.h"
 #include "esp_log.h"
 #include "esp_mqtt.h"
 #include "esp_timer.h"
-// #include "esp_wifi.h" // 补充缺失的头文件
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
+#include "math.h"
 #include "stdio.h"
 #include "string.h"
+
+static char g_at_rx_buffer[1024] = {0};        // 共享的接收缓冲区
+static volatile bool g_at_data_ready = false;  // 数据到达标志位
+static SemaphoreHandle_t g_at_rx_mutex = NULL; // 互斥锁，防止读写冲突
+
+// 前向声明，解决编译顺序问题
+static esp_err_t Cat1_Send_AT_Command(const char *cmd, uint32_t timeout_ms,
+                                      const char *expected_resp);
+
+// 新增：OTA 下载控制状态 (保留结构定义供参考)
+/*
+static struct {
+  uint32_t current_page;
+  uint32_t total_size;
+  uint8_t ota_staflag;
+  volatile bool is_downloading;
+} g_ota_at_ctrl = {0};
+*/
 
 Pack_CB pack;
 static const char *TAG = "WIFI_CAT1";
 QueueHandle_t OTA_ZC_Queue = NULL;
 
+/**
+ * @brief 子设备上线/下线报备 (按照新版 OneNET 规范修正)
+ * 格式要求：params 下嵌套 subDevices 数组
+ */
 void WiFi_Cat1_SubOnline(char sub_num, char mode) {
-  char temptopic[128];
-  char tempdata[256];
+  cJSON *root = cJSON_CreateObject();
+  if (root == NULL)
+    return;
 
-  memset(temptopic, 0, sizeof(temptopic));
-  memset(tempdata, 0, sizeof(tempdata));
+  // 使用简单的 13 位以内 ID
+  cJSON_AddStringToObject(root, "id", "2506");
+  cJSON_AddStringToObject(root, "version", "1.0");
+  cJSON *params = cJSON_AddObjectToObject(root, "params");
 
-  if (mode == 0) {
-    snprintf(temptopic, sizeof(temptopic), "$sys/%s/%s/thing/sub/logout",
-             GW_PRODUCTID, GW_DEVICENAME);
-  } else {
-    snprintf(temptopic, sizeof(temptopic), "$sys/%s/%s/thing/sub/login",
-             GW_PRODUCTID, GW_DEVICENAME);
+  // 关键修改：直接添加到 params 下，不要建数组！
+  cJSON_AddStringToObject(params, "productID", SUB_PRODUCTID);
+  cJSON_AddStringToObject(params, "deviceName", DeviceNameBuff[(int)sub_num]);
+
+  char *post_data = cJSON_PrintUnformatted(root);
+  if (post_data) {
+    char temptopic[128];
+    if (mode == 0) {
+      snprintf(temptopic, sizeof(temptopic), "$sys/%s/%s/thing/sub/logout",
+               GW_PRODUCTID, GW_DEVICENAME);
+    } else {
+      snprintf(temptopic, sizeof(temptopic), "$sys/%s/%s/thing/sub/login",
+               GW_PRODUCTID, GW_DEVICENAME);
+    }
+
+    Cat1_AT_MqttPublish(temptopic, post_data);
+    ESP_LOGI(TAG, "SubOnline sent (Direct Params Format): %s", post_data);
+    free(post_data);
   }
 
-  snprintf(tempdata, sizeof(tempdata),
-           "{\"id\": \"%d\",\"version\": \"1.0\",\"params\": {\"productID\": "
-           "\"%s\", \"deviceName\": \"%s\"}}",
-           sub_num, SUB_PRODUCTID, DeviceNameBuff[(int)sub_num]);
-
-  esp_mqtt_publish_msg(temptopic, tempdata, strlen(tempdata), 0, 0);
-  ESP_LOGI(TAG, "SubOnline sent: %s", tempdata);
+  cJSON_Delete(root);
 }
 
-void WiFi_Cat1_SubDataPost(unsigned char *postdata) {
-  char temptopic[64];
-
-  memset(temptopic, 0, sizeof(temptopic));
-  snprintf(temptopic, sizeof(temptopic), "$sys/%s/%s/thing/pack/post",
-           GW_PRODUCTID, GW_DEVICENAME);
-
-  esp_mqtt_publish_msg(temptopic, (const char *)postdata,
-                       strlen((char *)postdata), 0, 0);
-  ESP_LOGI(TAG, "SubDataPost sent: %s", postdata);
-}
-
+/**
+ * @brief 网关自身数据上报 (使用普通的 property/post)
+ */
 void WiFi_Cat1_GatewayDataPost(float temp, float hum, float lux) {
   cJSON *root = cJSON_CreateObject();
   if (root == NULL)
     return;
 
-  cJSON_AddStringToObject(root, "id", "123");
+  // 使用简单的 13 位以内 ID
+  cJSON_AddStringToObject(root, "id", "10804");
   cJSON_AddStringToObject(root, "version", "1.0");
   cJSON *params = cJSON_AddObjectToObject(root, "params");
 
+  // 终极精度修复：使用 cJSON_CreateRaw 强制保留两位小数，消灭裸整数
+  char t_str[16], h_str[16], l_str[16];
+  snprintf(t_str, sizeof(t_str), "%.2f", (double)temp);
+  snprintf(h_str, sizeof(h_str), "%.2f", (double)hum);
+  snprintf(l_str, sizeof(l_str), "%.2f", (double)lux);
+
   // 1. 空气温度
   cJSON *temp_obj = cJSON_AddObjectToObject(params, ATTRIBUTE5);
-  cJSON_AddNumberToObject(temp_obj, "value", temp);
+  cJSON_AddItemToObject(temp_obj, "value", cJSON_CreateRaw(t_str));
 
   // 2. 空气湿度
   cJSON *hum_obj = cJSON_AddObjectToObject(params, ATTRIBUTE6);
-  cJSON_AddNumberToObject(hum_obj, "value", hum);
+  cJSON_AddItemToObject(hum_obj, "value", cJSON_CreateRaw(h_str));
 
   // 3. 光照强度
   cJSON *lux_obj = cJSON_AddObjectToObject(params, ATTRIBUTE7);
-  cJSON_AddNumberToObject(lux_obj, "value", lux);
-
-  // 4. 【核心】固件版本属性上报 (新版 OneNET Studio OTA 关键)
-  // 必须与控制台定义的标识符 "firmware_version" 完全一致
-  cJSON *ver_obj = cJSON_AddObjectToObject(params, ATTRIBUTE_FIRMWARE_VER);
-  cJSON_AddStringToObject(ver_obj, "value", GATEWAY_VERSION);
+  cJSON_AddItemToObject(lux_obj, "value", cJSON_CreateRaw(l_str));
 
   char *post_data = cJSON_PrintUnformatted(root);
   if (post_data) {
@@ -86,8 +112,81 @@ void WiFi_Cat1_GatewayDataPost(float temp, float hum, float lux) {
     snprintf(temptopic, sizeof(temptopic), "$sys/%s/%s/thing/property/post",
              GW_PRODUCTID, GW_DEVICENAME);
 
-    esp_mqtt_publish_msg(temptopic, post_data, strlen(post_data), 0, 0);
-    ESP_LOGI(TAG, "GatewayDataPost (含版本号) 已发送: %s", post_data);
+    Cat1_AT_MqttPublish(temptopic, post_data);
+    ESP_LOGI(TAG, "GatewayDataPost 已发送: %s", post_data);
+    free(post_data);
+  }
+
+  cJSON_Delete(root);
+}
+
+/**
+ * @brief 子设备代理上报 (按照新版 OneNET Studio pack/post 规范重构)
+ * 关键点：
+ * 1. 使用 pack/post 主题
+ * 2. params 为数组，每个元素包含 identity (PID/SN) 和 properties
+ * 3. properties 内每个属性必须嵌套 {"value": xxx}
+ */
+void WiFi_Cat1_NodeDataPost(float temp, float hum, float lux) {
+  // 关键保护逻辑：仅在 MQTT 已连接 且 LoRa 已确认通信 且
+  // 子设备尚未报备上线时，才执行上线报备
+  if ((SysCB.SysEventFlag & CONNECT_MQTT) &&
+      (SysCB.SysEventFlag & SUB_LORA_CONFIRMED) &&
+      !(SysCB.SysEventFlag & SUB_ONLINE_READY)) {
+    ESP_LOGW(TAG, "LoRa 通信已确认，正在向 OneNET 报备子设备上线...");
+    WiFi_Cat1_SubOnline(1, 1);
+    SysCB.SysEventFlag |= SUB_ONLINE_READY;
+    vTaskDelay(pdMS_TO_TICKS(500));
+  }
+
+  cJSON *root = cJSON_CreateObject();
+  if (root == NULL)
+    return;
+
+  // 1. 基础字段
+  cJSON_AddStringToObject(root, "id", "123456");
+  cJSON_AddStringToObject(root, "version", "1.0");
+
+  // 2. params 为数组 (pack 接口核心)
+  cJSON *params_array = cJSON_AddArrayToObject(root, "params");
+  cJSON *sub_obj = cJSON_CreateObject();
+  cJSON_AddItemToArray(params_array, sub_obj);
+
+  // 3. identity 嵌套回归
+  cJSON *identity = cJSON_AddObjectToObject(sub_obj, "identity");
+  cJSON_AddStringToObject(identity, "productID", SUB_PRODUCTID);
+  cJSON_AddStringToObject(identity, "deviceName", DeviceNameBuff[1]);
+
+  // 4. properties 嵌套
+  cJSON *properties = cJSON_AddObjectToObject(sub_obj, "properties");
+
+  // 5. 格式化数值并执行 {"value": xxx} 嵌套
+  char nt_str[16], nh_str[16], nl_str[16];
+  snprintf(nt_str, sizeof(nt_str), "%.2f", (double)temp);
+  snprintf(nh_str, sizeof(nh_str), "%.2f", (double)hum);
+  snprintf(nl_str, sizeof(nl_str), "%.2f", (double)lux);
+
+  // 温度
+  cJSON *t_obj = cJSON_AddObjectToObject(properties, ATTRIBUTE_TEMP);
+  cJSON_AddItemToObject(t_obj, "value", cJSON_CreateRaw(nt_str));
+
+  // 湿度
+  cJSON *h_obj = cJSON_AddObjectToObject(properties, ATTRIBUTE_HUMI);
+  cJSON_AddItemToObject(h_obj, "value", cJSON_CreateRaw(nh_str));
+
+  // 光照
+  cJSON *l_obj = cJSON_AddObjectToObject(properties, ATTRIBUTE_LIGHTLUX);
+  cJSON_AddItemToObject(l_obj, "value", cJSON_CreateRaw(nl_str));
+
+  char *post_data = cJSON_PrintUnformatted(root);
+  if (post_data) {
+    char temptopic[128];
+    // 6. 切换到 pack/post 主题
+    snprintf(temptopic, sizeof(temptopic), "$sys/%s/%s/thing/pack/post",
+             GW_PRODUCTID, GW_DEVICENAME);
+
+    Cat1_AT_MqttPublish(temptopic, post_data);
+    ESP_LOGI(TAG, "NodeDataPost (Pack/Post Spec) 已发送: %s", post_data);
     free(post_data);
   }
 
@@ -96,54 +195,102 @@ void WiFi_Cat1_GatewayDataPost(float temp, float hum, float lux) {
 
 void WiFi_Cat1_SoilDataPost(float temp, float humi, float ec, float n, float p,
                             float k) {
-  char temptopic[128];
-  char tempdata[512];
+  cJSON *root = cJSON_CreateObject();
+  if (root == NULL)
+    return;
 
-  // OneNet 物模型属性上报主题
-  snprintf(temptopic, sizeof(temptopic), "$sys/%s/%s/thing/property/post",
-           GW_PRODUCTID, GW_DEVICENAME);
+  // 使用简单的 13 位以内 ID
+  cJSON_AddStringToObject(root, "id", "12906");
+  cJSON_AddStringToObject(root, "version", "1.0");
+  cJSON *params = cJSON_AddObjectToObject(root, "params");
 
-  // 构造 JSON 数据包
-  // 使用 app_config.h 中定义的土壤标识符
-  // 注意：根据平台显示，EC, N, P, K 为 int32 类型，因此使用 %.0f (或强制转int)
-  // 以免带小数点导致平台解析失败
-  snprintf(tempdata, sizeof(tempdata),
-           "{\"id\":\"456\",\"version\":\"1.0\",\"params\":{"
-           "\"%s\":{\"value\":%.2f}," // 温度 (double)
-           "\"%s\":{\"value\":%.2f}," // 水分 (double)
-           "\"%s\":{\"value\":%.0f}," // EC (int32)
-           "\"%s\":{\"value\":%.0f}," // 氮 (int32)
-           "\"%s\":{\"value\":%.0f}," // 磷 (int32)
-           "\"%s\":{\"value\":%.0f}"  // 钾 (int32)
-           "}}",
-           ATTRIBUTE_SOIL_TEMP, temp, ATTRIBUTE_SOIL_HUMI, humi,
-           ATTRIBUTE_SOIL_EC, ec, ATTRIBUTE_SOIL_N, n, ATTRIBUTE_SOIL_P, p,
-           ATTRIBUTE_SOIL_K, k);
+  // 终极精度修复：使用 cJSON_CreateRaw 强制保留两位小数，消灭裸整数
+  char st_str[16], sh_str[16], se_str[16], sn_str[16], sp_str[16], sk_str[16];
+  snprintf(st_str, sizeof(st_str), "%.2f", (double)temp);
+  snprintf(sh_str, sizeof(sh_str), "%.2f", (double)humi);
+  snprintf(se_str, sizeof(se_str), "%.2f", (double)ec);
+  snprintf(sn_str, sizeof(sn_str), "%.2f", (double)n);
+  snprintf(sp_str, sizeof(sp_str), "%.2f", (double)p);
+  snprintf(sk_str, sizeof(sk_str), "%.2f", (double)k);
 
-  esp_mqtt_publish_msg(temptopic, tempdata, strlen(tempdata), 0, 0);
-  ESP_LOGI(TAG, "SoilDataPost sent to %s: %s", temptopic, tempdata);
+  // 温度 (double)
+  cJSON *temp_obj = cJSON_AddObjectToObject(params, ATTRIBUTE_SOIL_TEMP);
+  cJSON_AddItemToObject(temp_obj, "value", cJSON_CreateRaw(st_str));
+
+  // 水分 (double)
+  cJSON *humi_obj = cJSON_AddObjectToObject(params, ATTRIBUTE_SOIL_HUMI);
+  cJSON_AddItemToObject(humi_obj, "value", cJSON_CreateRaw(sh_str));
+
+  // EC (double)
+  cJSON *ec_obj = cJSON_AddObjectToObject(params, ATTRIBUTE_SOIL_EC);
+  cJSON_AddItemToObject(ec_obj, "value", cJSON_CreateRaw(se_str));
+
+  // 氮 (double)
+  cJSON *n_obj = cJSON_AddObjectToObject(params, ATTRIBUTE_SOIL_N);
+  cJSON_AddItemToObject(n_obj, "value", cJSON_CreateRaw(sn_str));
+
+  // 磷 (double)
+  cJSON *p_obj = cJSON_AddObjectToObject(params, ATTRIBUTE_SOIL_P);
+  cJSON_AddItemToObject(p_obj, "value", cJSON_CreateRaw(sp_str));
+
+  // 钾 (double)
+  cJSON *k_obj = cJSON_AddObjectToObject(params, ATTRIBUTE_SOIL_K);
+  cJSON_AddItemToObject(k_obj, "value", cJSON_CreateRaw(sk_str));
+
+  char *post_data = cJSON_PrintUnformatted(root);
+  if (post_data) {
+    char temptopic[128];
+    snprintf(temptopic, sizeof(temptopic), "$sys/%s/%s/thing/property/post",
+             GW_PRODUCTID, GW_DEVICENAME);
+
+    Cat1_AT_MqttPublish(temptopic, post_data);
+    ESP_LOGI(TAG, "SoilDataPost sent to %s: %s", temptopic, post_data);
+    free(post_data);
+  }
+
+  cJSON_Delete(root);
 }
 
 void WiFi_Cat1_AdcDataPost(float adc1, float adc2, float adc3) {
-  char temptopic[128];
-  char tempdata[512];
+  cJSON *root = cJSON_CreateObject();
+  if (root == NULL)
+    return;
 
-  // OneNet 物模型属性上报主题
-  snprintf(temptopic, sizeof(temptopic), "$sys/%s/%s/thing/property/post",
-           GW_PRODUCTID, GW_DEVICENAME);
+  // 使用简单的 13 位以内 ID
+  cJSON_AddStringToObject(root, "id", "3092");
+  cJSON_AddStringToObject(root, "version", "1.0");
+  cJSON *params = cJSON_AddObjectToObject(root, "params");
 
-  // 构造 JSON 数据包
-  // 使用 app_config.h 中定义的 ADC 标识符 (ATTRIBUTE8, 9, 10)
-  snprintf(tempdata, sizeof(tempdata),
-           "{\"id\":\"789\",\"version\":\"1.0\",\"params\":{"
-           "\"%s\":{\"value\":%.2f}," // ADC1
-           "\"%s\":{\"value\":%.2f}," // ADC2
-           "\"%s\":{\"value\":%.2f}"  // ADC3
-           "}}",
-           ATTRIBUTE8, adc1, ATTRIBUTE9, adc2, ATTRIBUTE10, adc3);
+  // 终极精度修复：使用 cJSON_CreateRaw 强制保留两位小数
+  char a1_str[16], a2_str[16], a3_str[16];
+  snprintf(a1_str, sizeof(a1_str), "%.2f", (double)adc1);
+  snprintf(a2_str, sizeof(a2_str), "%.2f", (double)adc2);
+  snprintf(a3_str, sizeof(a3_str), "%.2f", (double)adc3);
 
-  esp_mqtt_publish_msg(temptopic, tempdata, strlen(tempdata), 0, 0);
-  ESP_LOGI(TAG, "AdcDataPost sent to %s: %s", temptopic, tempdata);
+  // ADC1
+  cJSON *adc1_obj = cJSON_AddObjectToObject(params, ATTRIBUTE8);
+  cJSON_AddItemToObject(adc1_obj, "value", cJSON_CreateRaw(a1_str));
+
+  // ADC2
+  cJSON *adc2_obj = cJSON_AddObjectToObject(params, ATTRIBUTE9);
+  cJSON_AddItemToObject(adc2_obj, "value", cJSON_CreateRaw(a2_str));
+
+  // ADC3
+  cJSON *adc3_obj = cJSON_AddObjectToObject(params, ATTRIBUTE10);
+  cJSON_AddItemToObject(adc3_obj, "value", cJSON_CreateRaw(a3_str));
+
+  char *post_data = cJSON_PrintUnformatted(root);
+  if (post_data) {
+    char temptopic[128];
+    snprintf(temptopic, sizeof(temptopic), "$sys/%s/%s/thing/property/post",
+             GW_PRODUCTID, GW_DEVICENAME);
+
+    Cat1_AT_MqttPublish(temptopic, post_data);
+    ESP_LOGI(TAG, "AdcDataPost sent to %s: %s", temptopic, post_data);
+    free(post_data);
+  }
+
+  cJSON_Delete(root);
 }
 
 void WiFi_Cat1_AllDataPost(float air_temp, float air_hum, float air_lux,
@@ -154,43 +301,59 @@ void WiFi_Cat1_AllDataPost(float air_temp, float air_hum, float air_lux,
   if (root == NULL)
     return;
 
-  cJSON_AddStringToObject(root, "id", "999");
+  // 使用简单的 13 位以内 ID
+  cJSON_AddStringToObject(root, "id", "5011");
   cJSON_AddStringToObject(root, "version", "1.0");
   cJSON *params = cJSON_AddObjectToObject(root, "params");
 
+  // 终极精度修复：使用 cJSON_CreateRaw 强制转换两位小数
+  char at_str[16], ah_str[16], al_str[16];
+  snprintf(at_str, sizeof(at_str), "%.2f", (double)air_temp);
+  snprintf(ah_str, sizeof(ah_str), "%.2f", (double)air_hum);
+  snprintf(al_str, sizeof(al_str), "%.2f", (double)air_lux);
+
+  char st_str[16], sh_str[16], se_str[16], sn_str[16], sp_str[16], sk_str[16];
+  snprintf(st_str, sizeof(st_str), "%.2f", (double)soil_temp);
+  snprintf(sh_str, sizeof(sh_str), "%.2f", (double)soil_humi);
+  snprintf(se_str, sizeof(se_str), "%.2f", (double)soil_ec);
+  snprintf(sn_str, sizeof(sn_str), "%.2f", (double)soil_n);
+  snprintf(sp_str, sizeof(sp_str), "%.2f", (double)soil_p);
+  snprintf(sk_str, sizeof(sk_str), "%.2f", (double)soil_k);
+
   // 1. 网关空气温湿度 + 光强
   cJSON *temp_obj = cJSON_AddObjectToObject(params, ATTRIBUTE5);
-  cJSON_AddNumberToObject(temp_obj, "value", air_temp);
+  cJSON_AddItemToObject(temp_obj, "value", cJSON_CreateRaw(at_str));
   cJSON *hum_obj = cJSON_AddObjectToObject(params, ATTRIBUTE6);
-  cJSON_AddNumberToObject(hum_obj, "value", air_hum);
+  cJSON_AddItemToObject(hum_obj, "value", cJSON_CreateRaw(ah_str));
   cJSON *lux_obj = cJSON_AddObjectToObject(params, ATTRIBUTE7);
-  cJSON_AddNumberToObject(lux_obj, "value", air_lux);
+  cJSON_AddItemToObject(lux_obj, "value", cJSON_CreateRaw(al_str));
 
   // 2. 土壤传感器数据
   cJSON *stemp_obj = cJSON_AddObjectToObject(params, ATTRIBUTE_SOIL_TEMP);
-  cJSON_AddNumberToObject(stemp_obj, "value", soil_temp);
+  cJSON_AddItemToObject(stemp_obj, "value", cJSON_CreateRaw(st_str));
   cJSON *shum_obj = cJSON_AddObjectToObject(params, ATTRIBUTE_SOIL_HUMI);
-  cJSON_AddNumberToObject(shum_obj, "value", soil_humi);
+  cJSON_AddItemToObject(shum_obj, "value", cJSON_CreateRaw(sh_str));
   cJSON *sec_obj = cJSON_AddObjectToObject(params, ATTRIBUTE_SOIL_EC);
-  cJSON_AddNumberToObject(sec_obj, "value", (int)soil_ec);
+  cJSON_AddItemToObject(sec_obj, "value", cJSON_CreateRaw(se_str));
   cJSON *sn_obj = cJSON_AddObjectToObject(params, ATTRIBUTE_SOIL_N);
-  cJSON_AddNumberToObject(sn_obj, "value", (int)soil_n);
+  cJSON_AddItemToObject(sn_obj, "value", cJSON_CreateRaw(sn_str));
   cJSON *sp_obj = cJSON_AddObjectToObject(params, ATTRIBUTE_SOIL_P);
-  cJSON_AddNumberToObject(sp_obj, "value", (int)soil_p);
+  cJSON_AddItemToObject(sp_obj, "value", cJSON_CreateRaw(sp_str));
   cJSON *sk_obj = cJSON_AddObjectToObject(params, ATTRIBUTE_SOIL_K);
-  cJSON_AddNumberToObject(sk_obj, "value", (int)soil_k);
+  cJSON_AddItemToObject(sk_obj, "value", cJSON_CreateRaw(sk_str));
 
   // 3. ADC 数据
-  cJSON *adc1_obj = cJSON_AddObjectToObject(params, ATTRIBUTE8);
-  cJSON_AddNumberToObject(adc1_obj, "value", adc1);
-  cJSON *adc2_obj = cJSON_AddObjectToObject(params, ATTRIBUTE9);
-  cJSON_AddNumberToObject(adc2_obj, "value", adc2);
-  cJSON *adc3_obj = cJSON_AddObjectToObject(params, ATTRIBUTE10);
-  cJSON_AddNumberToObject(adc3_obj, "value", adc3);
+  char a1_str[16], a2_str[16], a3_str[16];
+  snprintf(a1_str, sizeof(a1_str), "%.2f", (double)adc1);
+  snprintf(a2_str, sizeof(a2_str), "%.2f", (double)adc2);
+  snprintf(a3_str, sizeof(a3_str), "%.2f", (double)adc3);
 
-  // 4. 固件版本号 (关键：用于 OneNET 识别设备版本)
-  cJSON *ver_obj = cJSON_AddObjectToObject(params, ATTRIBUTE_FIRMWARE_VER);
-  cJSON_AddStringToObject(ver_obj, "value", GATEWAY_VERSION);
+  cJSON *adc1_obj = cJSON_AddObjectToObject(params, ATTRIBUTE8);
+  cJSON_AddItemToObject(adc1_obj, "value", cJSON_CreateRaw(a1_str));
+  cJSON *adc2_obj = cJSON_AddObjectToObject(params, ATTRIBUTE9);
+  cJSON_AddItemToObject(adc2_obj, "value", cJSON_CreateRaw(a2_str));
+  cJSON *adc3_obj = cJSON_AddObjectToObject(params, ATTRIBUTE10);
+  cJSON_AddItemToObject(adc3_obj, "value", cJSON_CreateRaw(a3_str));
 
   char *post_data = cJSON_PrintUnformatted(root);
   if (post_data) {
@@ -198,7 +361,7 @@ void WiFi_Cat1_AllDataPost(float air_temp, float air_hum, float air_lux,
     snprintf(temptopic, sizeof(temptopic), "$sys/%s/%s/thing/property/post",
              GW_PRODUCTID, GW_DEVICENAME);
 
-    esp_mqtt_publish_msg(temptopic, post_data, strlen(post_data), 0, 0);
+    Cat1_AT_MqttPublish(temptopic, post_data);
     ESP_LOGI(TAG, "AllDataPost (合并上报) 已发送: %s", post_data);
     free(post_data);
   }
@@ -206,21 +369,52 @@ void WiFi_Cat1_AllDataPost(float air_temp, float air_hum, float air_lux,
   cJSON_Delete(root);
 }
 
-/*-------------------------------------------------*/
-/*函数名：复位4G Cat1模块                          */
-/*参  数：无                                       */
-/*返回值：无                                       */
-/*-------------------------------------------------*/
+/**
+ * @brief 主动获取子设备属性 (按照 OneNET 规范)
+ * @param sub_num 子设备索引 (对应 DeviceNameBuff)
+ */
+void WiFi_Cat1_SubPropertyGet(char sub_num) {
+  cJSON *root = cJSON_CreateObject();
+  if (root == NULL)
+    return;
+
+  // 使用简单的 13 位以内 ID
+  cJSON_AddStringToObject(root, "id", "7503");
+  cJSON_AddStringToObject(root, "version", "1.0");
+
+  cJSON *params = cJSON_AddObjectToObject(root, "params");
+  cJSON_AddStringToObject(params, "deviceName", DeviceNameBuff[(int)sub_num]);
+  cJSON_AddStringToObject(params, "productID", SUB_PRODUCTID);
+
+  cJSON *attr_list = cJSON_AddArrayToObject(params, "params");
+  cJSON_AddItemToArray(attr_list, cJSON_CreateString(ATTRIBUTE_TEMP));
+  cJSON_AddItemToArray(attr_list, cJSON_CreateString(ATTRIBUTE_HUMI));
+  cJSON_AddItemToArray(attr_list, cJSON_CreateString(ATTRIBUTE_LIGHTLUX));
+
+  char *post_data = cJSON_PrintUnformatted(root);
+  if (post_data) {
+    char temptopic[128];
+    snprintf(temptopic, sizeof(temptopic), "$sys/%s/%s/thing/sub/property/get",
+             GW_PRODUCTID, GW_DEVICENAME);
+
+    Cat1_AT_MqttPublish(temptopic, post_data);
+    ESP_LOGI(TAG, "SubPropertyGet sent: %s", post_data);
+    free(post_data);
+  }
+
+  cJSON_Delete(root);
+}
+
 void WiFi_Cat1_InitGPIO(void) {
-#if (CAT1_POWER_PIN >= 0)
-  gpio_set_direction(CAT1_POWER_PIN, GPIO_MODE_OUTPUT);
-#endif
-#if (CAT1_POWER_STA_PIN >= 0)
-  gpio_set_direction(CAT1_POWER_STA_PIN, GPIO_MODE_INPUT);
-#endif
-#if (CAT1_NET_STA_PIN >= 0)
-  gpio_set_direction(CAT1_NET_STA_PIN, GPIO_MODE_INPUT);
-#endif
+  if (CAT1_POWER_STATE_PIN >= 0) {
+    gpio_set_direction(CAT1_POWER_STATE_PIN, GPIO_MODE_OUTPUT);
+  }
+  if (CAT1_POWER_STA_PIN >= 0) {
+    gpio_set_direction(CAT1_POWER_STA_PIN, GPIO_MODE_INPUT);
+  }
+  if (CAT1_NET_STA_PIN >= 0) {
+    gpio_set_direction(CAT1_NET_STA_PIN, GPIO_MODE_INPUT);
+  }
 }
 
 void Cat1_Reset(void) {
@@ -248,182 +442,9 @@ void Cat1_Reset(void) {
            "开机成功，请等待4G Cat1模块注册上网络... ...\r\n"); // 串口输出信息
 }
 
-/*
-void WiFi_Reset(void) {
-  esp_wifi_stop();
-  vTaskDelay(pdMS_TO_TICKS(500));
-  esp_wifi_start();
-  vTaskDelay(pdMS_TO_TICKS(500));
-  esp_wifi_connect();
-}
-
-void wifi_full_reset() {
-  esp_wifi_disconnect();
-  esp_wifi_stop();
-  esp_wifi_deinit();
-
-  wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-  esp_wifi_init(&cfg);
-  esp_wifi_set_mode(WIFI_MODE_STA);
-  esp_wifi_start();
-  esp_wifi_connect();
-}
-*/
-
-void WiFi_Cat1_ReportVersion(const char *id) {
-  // ==========================================================
-  // 核心变更：新版 OneNET 物联网开放平台 (Studio) 规范
-  // ==========================================================
-  if (id != NULL) {
-    char reply_topic[128];
-    char reply_data[128];
-    snprintf(reply_topic, sizeof(reply_topic), "$sys/%s/%s/ota/inform_reply",
-             GW_PRODUCTID, GW_DEVICENAME);
-
-    // 修正：确保 ID 类型正确且包含 msg 描述
-    snprintf(reply_data, sizeof(reply_data),
-             "{\"id\":\"%s\",\"code\":200,\"msg\":\"success\"}", id);
-
-    esp_mqtt_publish_msg(reply_topic, reply_data, strlen(reply_data), 1, 0);
-    ESP_LOGI(TAG, "已向平台发送 OTA 指令确认 (ACK): %s", reply_data);
-  } else {
-    ESP_LOGI(
-        TAG,
-        "版本号将通过 GatewayDataPost 随属性周期性上报，无需在此单独报备。");
-  }
-}
-
-void WiFi_Cat1_PropertyVersion(uint8_t num) {
-  ESP_LOGI(TAG, "WiFi_Cat1_PropertyVersion %d", num);
-}
-
-void WiFi_Cat1_CheckOTATask(uint8_t num) {
-  ESP_LOGI(TAG, "WiFi_Cat1_CheckOTATask %d", num);
-}
-
-typedef struct {
-  char url[1024];
-  char token[256]; // 新增：固件下载 Token
-  uint8_t ota_staflag;
-} ota_task_args_t;
-
-static void ota_download_task(void *pvParameters) {
-  ota_task_args_t *args = (ota_task_args_t *)pvParameters;
-  ESP_LOGI(TAG, "开始从 %s 下载 OTA 固件", args->url);
-
-  esp_http_client_config_t config = {
-      .url = args->url,
-      .method = HTTP_METHOD_GET,
-      .timeout_ms = 30000, // 增加到 30 秒，适应大文件下载
-      .crt_bundle_attach = esp_crt_bundle_attach, // 支持 HTTPS
-  };
-
-  esp_http_client_handle_t client = esp_http_client_init(&config);
-  if (client == NULL) {
-    ESP_LOGE(TAG, "HTTP 客户端初始化失败");
-    SysCB.SysEventFlag &= ~OTA_RUNNING;
-    free(args);
-    vTaskDelete(NULL);
-    return;
-  }
-
-  // 【修正】新版 OneNET Studio 规范：
-  // 下载 URL 已经包含了 Token (download/ota_xxxx)，
-  // 绝对不能在 Header 里再加 Authorization，否则会导致鉴权失败。
-  // 直接发起 GET 请求即可。
-
-  esp_err_t err = esp_http_client_open(client, 0);
-  if (err != ESP_OK) {
-    ESP_LOGE(TAG, "无法打开 HTTP 连接: %s", esp_err_to_name(err));
-    esp_http_client_cleanup(client);
-    SysCB.SysEventFlag &= ~OTA_RUNNING;
-    free(args);
-    vTaskDelete(NULL);
-    return;
-  }
-  // ... 后续逻辑
-  int content_length = esp_http_client_fetch_headers(client);
-  if (content_length <= 0) {
-    ESP_LOGE(TAG, "获取固件大小失败");
-    esp_http_client_cleanup(client);
-    SysCB.SysEventFlag &= ~OTA_RUNNING; // 释放标志
-    free(args);
-    vTaskDelete(NULL);
-    return;
-  }
-
-  uint8_t *buffer = malloc(OTA_RANGE_SIZE);
-  if (buffer == NULL) {
-    ESP_LOGE(TAG, "内存分配失败");
-    esp_http_client_cleanup(client);
-    SysCB.SysEventFlag &= ~OTA_RUNNING; // 释放标志
-    free(args);
-    vTaskDelete(NULL);
-    return;
-  }
-
-  int total_read = 0;
-  uint32_t page_index = 0;
-
-  while (total_read < content_length) {
-    int read = esp_http_client_read(client, (char *)buffer, OTA_RANGE_SIZE);
-    if (read < 0) {
-      ESP_LOGE(TAG, "HTTP 读取错误");
-      break;
-    } else if (read == 0) {
-      break;
-    }
-    total_read += read;
-    uint8_t is_last = (total_read >= content_length) ? 1 : 0;
-
-    // 调用现有的处理逻辑，将数据块放入队列
-    OTAServer_process(buffer, read, page_index, is_last, args->ota_staflag);
-
-    page_index++;
-    // 给其他任务一点运行时间，防止看门狗复位
-    vTaskDelay(pdMS_TO_TICKS(10));
-  }
-
-  ESP_LOGI(TAG, "OTA 下载完成，总共读取: %d 字节", total_read);
-
-  // 清除 OTA 运行标志，允许其他任务恢复
-  SysCB.SysEventFlag &= ~OTA_RUNNING;
-
-  free(buffer);
-  esp_http_client_cleanup(client);
-  free(args);
-  vTaskDelete(NULL);
-}
-
-void WiFi_Cat1_StartOTA(const char *url, const char *token,
-                        uint8_t ota_staflag) {
-  // 同步设置 OTA 运行标志，确保立即拦截其他任务的 MQTT 发送请求
-  SysCB.SysEventFlag |= OTA_RUNNING;
-
-  ota_task_args_t *args = malloc(sizeof(ota_task_args_t));
-  if (args == NULL) {
-    SysCB.SysEventFlag &= ~OTA_RUNNING; // 分配失败需恢复标志
-    return;
-  }
-
-  memset(args, 0, sizeof(ota_task_args_t));
-  strncpy(args->url, url, sizeof(args->url) - 1);
-  if (token) {
-    strncpy(args->token, token, sizeof(args->token) - 1);
-  }
-  args->ota_staflag = ota_staflag;
-
-  xTaskCreate(ota_download_task, "ota_download", 8192, args, 5, NULL);
-}
-
-/**
- * @brief 适配新版 OneNET Studio 的 OTA 检查逻辑
- */
 void Studio_OTA_CheckTask(void) {
   extern char Mqtt_Password[]; // 复用 MQTT 连接的 Token 进行鉴权
 
-  // 1. 拼接新版 Studio OTA 检查接口 URL
-  // 注意域名是 studio-ota.heclouds.com
   char url[512];
   snprintf(url, sizeof(url),
            "https://studio-ota.heclouds.com/ota/south/check?product_id=%s&"
@@ -436,7 +457,6 @@ void Studio_OTA_CheckTask(void) {
       .url = url,
       .method = HTTP_METHOD_GET,
       .timeout_ms = 15000,
-      // 核心修改：跳过证书验证，解决 PPP 环境下的 TLS 握手超时问题
       .skip_cert_common_name_check = true,
       .use_global_ca_store = false,
   };
@@ -445,7 +465,6 @@ void Studio_OTA_CheckTask(void) {
   if (!client)
     return;
 
-  // 2. 设置鉴权头（使用 MQTT 的 Token）
   esp_http_client_set_header(client, "Authorization", Mqtt_Password);
 
   esp_err_t err = esp_http_client_open(client, 0);
@@ -461,11 +480,8 @@ void Studio_OTA_CheckTask(void) {
           buffer[read_len] = '\0';
           ESP_LOGI(TAG, "Studio OTA 返回数据: %s", buffer);
 
-          // 3. 解析 JSON，提取下载 URL
           cJSON *root = cJSON_Parse(buffer);
           if (root) {
-            // 新版 API 标准返回格式类似: {"code":0, "msg":"succ",
-            // "data":{"url":"http://...", "task_id":"..."}}
             cJSON *data = cJSON_GetObjectItem(root, "data");
             if (data && cJSON_IsObject(data)) {
               cJSON *url_item = cJSON_GetObjectItem(data, "url");
@@ -473,12 +489,7 @@ void Studio_OTA_CheckTask(void) {
               if (url_item && cJSON_IsString(url_item)) {
                 const char *download_url = url_item->valuestring;
                 ESP_LOGI(TAG, ">>> 成功获取固件下载链接: %s", download_url);
-
-                // 4. 启动您原有的下载任务
                 WiFi_Cat1_StartOTA(download_url, NULL, 0);
-              } else {
-                ESP_LOGW(TAG, "!!! JSON 中未找到 url "
-                              "字段，可能当前版本无升级任务 !!!");
               }
             }
             cJSON_Delete(root);
@@ -486,126 +497,210 @@ void Studio_OTA_CheckTask(void) {
         }
         free(buffer);
       }
-    } else {
-      ESP_LOGW(TAG,
-               "!!! OTA 接口返回数据异常 (Len: "
-               "%d)，可能当前版本无升级任务 !!!",
-               content_length);
     }
-  } else {
-    ESP_LOGE(TAG, "!!! 请求 Studio OTA 接口失败，错误码: %d !!!", err);
   }
-
   esp_http_client_cleanup(client);
 }
 
-void WiFi_Cat1_OTADownload(uint16_t s, uint16_t e, uint8_t num) {
-  ESP_LOGI(TAG, "WiFi_Cat1_OTADownload %d-%d", s, e);
-}
-
-void WiFi_Cat1_ActiveEvent(void) {
-  // 各种定时事件
-}
-/*-------------------------------------------------*/
-/*函数名：处理OTA服务器的数据                     */
-/*参  数：data ：数据                              */
-/*参  数：datalen ：数据长度                       */
-/*参  数：page_index ：当前页索引                   */
-/*参  数：is_last ：是否为最后一页                       */
-/*参  数：ota_staflag ：OTA状态标志位, 0:网关, 1:子设备 */
-/*返回值：无                                       */
-/*-------------------------------------------------*/
 void OTAServer_process(uint8_t *data, uint16_t datalen, uint32_t page_index,
                        uint8_t is_last, uint8_t ota_staflag) {
-  // 处理 OTA 服务器的响应
-  // 修正：分配内存时必须包含变长数组 data[] 的空间
   OTA_ZC_Chunk *new_chunk =
       (OTA_ZC_Chunk *)malloc(sizeof(OTA_ZC_Chunk) + datalen);
   if (new_chunk != NULL) {
-
     new_chunk->len = datalen;
     new_chunk->page_index = page_index;
     new_chunk->is_last = is_last;
     new_chunk->ota_staflag = ota_staflag;
-    // 拷贝实际有效的数据到尾部的可变数组中
     memcpy(new_chunk->data, data, datalen);
-    // 入队
     if (xQueueSend(OTA_ZC_Queue, new_chunk,
                    pdMS_TO_TICKS(OTA_ZC_SEND_TIMEOUT_MS)) != pdTRUE) {
       free(new_chunk);
-      ESP_LOGI(TAG, "OTA_ZC_Queue send fail");
     }
-  } else {
-    //// 内存分配失败处理
-    ESP_LOGI(TAG, "OTA_ZC_Queue send fail");
   }
 }
 
-/**
- * @brief 处理 MQTT 服务器下发的数据（透明传输 TCP 报文解析）
- *
- * @param data 串口收到的原始 MQTT 十六进制报文
- * @param data_len 报文总长度
- */
-void MqttServer_ProcessData(uint8_t *data, uint16_t data_len) {
-  if (data_len < 2)
+void WiFi_Cat1_PropertyVersion(uint8_t num) {
+  // 根据用户要求，不再上报子设备版本信息
+  if (num != 0) {
     return;
-
-  uint8_t packet_type = (data[0] & 0xF0) >> 4;
-
-  switch (packet_type) {
-  case 0x02: // CONNACK
-    if (data[3] == 0x00) {
-      ESP_LOGI(TAG, "MQTT 服务器登录成功!");
-    } else {
-      ESP_LOGE(TAG, "MQTT 服务器登录失败, 错误码: 0x%02X", data[3]);
-    }
-    break;
-
-  case 0x03: // PUBLISH
-  {
-    uint32_t multiplier = 1;
-    uint32_t remaining_length = 0;
-    int index = 1;
-    uint8_t encoded_byte;
-    do {
-      encoded_byte = data[index++];
-      remaining_length += (encoded_byte & 127) * multiplier;
-      multiplier *= 128;
-    } while ((encoded_byte & 128) != 0 && index < data_len);
-
-    uint16_t topic_len = (data[index] << 8) | data[index + 1];
-    index += 2;
-
-    char rx_topic[128] = {0};
-    if (topic_len < sizeof(rx_topic)) {
-      memcpy(rx_topic, &data[index], topic_len);
-    }
-    index += topic_len;
-
-    uint16_t payload_len = remaining_length - topic_len - 2;
-    char rx_payload[512] = {0};
-    if (payload_len < sizeof(rx_payload)) {
-      memcpy(rx_payload, &data[index], payload_len);
-    }
-
-    ESP_LOGI(TAG, "MQTT Topic: %s", rx_topic);
-    ESP_LOGI(TAG, "MQTT Payload: %s", rx_payload);
-    break;
   }
 
-  case 0x0D: // PINGRESP
-    ESP_LOGD(TAG, "收到 MQTT PINGRESP");
-    break;
+  char versionatabuff[128]; // 临时缓冲区
+  char tempdatabuff[512];   // 临时缓冲区 (加大以防止溢出)
 
-  default:
-    ESP_LOGW(TAG, "收到其他 MQTT 报文类型: 0x%02X", packet_type);
-    break;
+  memset(versionatabuff, 0, 128);
+  memset(tempdatabuff, 0, 512);
+
+  // 网关版本报备逻辑 (保留 num == 0 分支)
+  sprintf(versionatabuff, "{\"s_version\":\"%s\",\"f_version\": \"null\"}",
+          info.Version[0]);
+  sprintf(tempdatabuff,
+          "POST /fuse-ota/%s/%s/version HTTP/1.1\r\nContent-Type: "
+          "application/json\r\nAuthorization:%s\r\nhost:iot-api.heclouds.com"
+          "\r\nContent-Length:%d\r\n\r\n%s\r\n\r\n",
+          GW_PRODUCTID, GW_DEVICENAME, Accesskey, (int)strlen(versionatabuff),
+          versionatabuff);
+
+  if (SysCB.SysEventFlag & CONNECT_WIFI) {
+    ESP_LOGI(TAG, "WiFi 模式下版本报备: %s", tempdatabuff);
+  } else if (SysCB.SysEventFlag & CONNECT_CAT1) {
+    bsp_uart_cat1_send(tempdatabuff, strlen(tempdatabuff));
   }
+}
+
+static esp_err_t Cat1_Send_AT_Command(const char *cmd, uint32_t timeout_ms,
+                                      const char *expected_resp) {
+  bsp_uart_cat1_send(cmd, strlen(cmd));
+  uint32_t start_time = xTaskGetTickCount();
+  if (g_at_rx_mutex) {
+    xSemaphoreTake(g_at_rx_mutex, portMAX_DELAY);
+    memset(g_at_rx_buffer, 0, sizeof(g_at_rx_buffer));
+    g_at_data_ready = false;
+    xSemaphoreGive(g_at_rx_mutex);
+  }
+  while ((xTaskGetTickCount() - start_time) * portTICK_PERIOD_MS < timeout_ms) {
+    if (g_at_data_ready) {
+      xSemaphoreTake(g_at_rx_mutex, portMAX_DELAY);
+      if (strstr(g_at_rx_buffer, "RDY")) {
+        xSemaphoreGive(g_at_rx_mutex);
+        return ESP_FAIL;
+      }
+      if (expected_resp && strstr(g_at_rx_buffer, expected_resp)) {
+        xSemaphoreGive(g_at_rx_mutex);
+        return ESP_OK;
+      }
+      xSemaphoreGive(g_at_rx_mutex);
+    }
+    vTaskDelay(pdMS_TO_TICKS(10));
+  }
+  return ESP_ERR_TIMEOUT;
+}
+
+void Cat1_AT_Mqtt_Task(void *pvParameters) {
+  static char at_cmd[1024];
+  ESP_LOGI(TAG, "Cat1 MQTT 监控任务已启动 (带启动保护延时)...");
+  vTaskDelay(pdMS_TO_TICKS(10000));
+  for (;;) {
+    if (SysCB.SysEventFlag & CONNECT_WIFI) {
+      vTaskDelay(pdMS_TO_TICKS(30000));
+      continue;
+    }
+    if (SysCB.SysEventFlag & CONNECT_MQTT) {
+      if (Cat1_Send_AT_Command("AT\r\n", 1000, "OK") != ESP_OK) {
+        SysCB.SysEventFlag &= ~CONNECT_MQTT;
+      }
+      vTaskDelay(pdMS_TO_TICKS(10000));
+      continue;
+    }
+    int retry_main = 0;
+    const int max_retry_main = 5;
+    while (retry_main < max_retry_main) {
+      Cat1_Send_AT_Command("AT+QIDEACT=1\r\n", 3000, "OK");
+      vTaskDelay(pdMS_TO_TICKS(2000));
+      if (Cat1_Send_AT_Command("AT+CPIN?\r\n", 5000, "+CPIN: READY") != ESP_OK)
+        goto retry_init;
+      vTaskDelay(pdMS_TO_TICKS(1000));
+      bool registered = false;
+      for (int i = 0; i < 15; i++) {
+        if (Cat1_Send_AT_Command("AT+CGREG?\r\n", 2000, "+CGREG: 0,1") ==
+                ESP_OK ||
+            Cat1_Send_AT_Command("AT+CGREG?\r\n", 2000, "+CGREG: 0,5") ==
+                ESP_OK) {
+          registered = true;
+          break;
+        }
+        vTaskDelay(pdMS_TO_TICKS(2000));
+      }
+      if (!registered)
+        goto retry_init;
+      snprintf(at_cmd, sizeof(at_cmd), "AT+QICSGP=1,1,\"%s\",\"\",\"\",0\r\n",
+               CAT1_APN);
+      Cat1_Send_AT_Command(at_cmd, 3000, "OK");
+      vTaskDelay(pdMS_TO_TICKS(2000));
+      if (Cat1_Send_AT_Command("AT+QIACT=1\r\n", 30000, "OK") != ESP_OK)
+        goto retry_init;
+      vTaskDelay(pdMS_TO_TICKS(5000));
+      Cat1_Send_AT_Command("AT+QMTCFG=\"version\",0,4\r\n", 1000, "OK");
+      vTaskDelay(pdMS_TO_TICKS(1000));
+      if (Cat1_Send_AT_Command("AT+QMTOPEN=0,\"183.230.40.96\",1883\r\n", 15000,
+                               "+QMTOPEN: 0,0") != ESP_OK)
+        goto retry_init;
+      vTaskDelay(pdMS_TO_TICKS(2000));
+      MQTT_Init();
+      snprintf(at_cmd, sizeof(at_cmd), "AT+QMTCONN=0,\"%s\",\"%s\",\"%s\"\r\n",
+               GW_DEVICENAME, GW_PRODUCTID, Mqtt_Password);
+      if (Cat1_Send_AT_Command(at_cmd, 10000, "+QMTCONN: 0,0,0") == ESP_OK) {
+        SysCB.SysEventFlag |= CONNECT_MQTT;
+        WiFi_Cat1_SubOnline(1, 1);
+        break;
+      }
+    retry_init:
+      retry_main++;
+      vTaskDelay(pdMS_TO_TICKS(10000));
+    }
+    if (!(SysCB.SysEventFlag & CONNECT_MQTT))
+      vTaskDelay(pdMS_TO_TICKS(30000));
+  }
+}
+
+esp_err_t Cat1_AT_MqttPublish(const char *topic, const char *payload) {
+  if (topic == NULL || payload == NULL)
+    return ESP_ERR_INVALID_ARG;
+  if (SysCB.SysEventFlag & CONNECT_WIFI) {
+    int msg_id = esp_mqtt_publish_msg(topic, payload, strlen(payload), 1, 0);
+    return (msg_id >= 0) ? ESP_OK : ESP_FAIL;
+  }
+  char cmd[128];
+  snprintf(cmd, sizeof(cmd), "AT+QMTPUB=0,0,0,0,\"%s\"\r\n", topic);
+  if (Cat1_Send_AT_Command(cmd, 2000, ">") != ESP_OK) {
+    SysCB.SysEventFlag &= ~CONNECT_MQTT;
+    return ESP_FAIL;
+  }
+  int total_len = strlen(payload);
+  int packet_size = 200;
+  int sent_len = 0;
+  while (sent_len < total_len) {
+    int this_len = (total_len - sent_len > packet_size)
+                       ? packet_size
+                       : (total_len - sent_len);
+    bsp_uart_cat1_send(payload + sent_len, this_len);
+    sent_len += this_len;
+    vTaskDelay(pdMS_TO_TICKS(50));
+  }
+  char ctrl_z = 0x1A;
+  bsp_uart_cat1_send(&ctrl_z, 1);
+  return ESP_OK;
 }
 
 void start_Cat1Task(void *argument) {
+  uint8_t *data = (uint8_t *)malloc(256);
+  if (g_at_rx_mutex == NULL)
+    g_at_rx_mutex = xSemaphoreCreateMutex();
   for (;;) {
-    vTaskDelay(pdMS_TO_TICKS(1000));
+    if (SysCB.SysEventFlag & CONNECT_WIFI) {
+      vTaskDelay(pdMS_TO_TICKS(5000));
+      continue;
+    }
+    int len = uart_read_bytes(UART_NUM_CAT1, data, 255, pdMS_TO_TICKS(100));
+    if (len > 0) {
+      data[len] = '\0';
+      if (g_at_rx_mutex) {
+        xSemaphoreTake(g_at_rx_mutex, portMAX_DELAY);
+        strncat(g_at_rx_buffer, (char *)data,
+                sizeof(g_at_rx_buffer) - strlen(g_at_rx_buffer) - 1);
+        g_at_data_ready = true;
+        xSemaphoreGive(g_at_rx_mutex);
+      }
+      if (strstr((char *)data, "RDY")) {
+        SysCB.SysEventFlag &= ~CONNECT_MQTT;
+      } else if (strstr((char *)data, "+QMTCONN: 0,0,0")) {
+        SysCB.SysEventFlag |= CONNECT_MQTT;
+      } else if (strstr((char *)data, "+QMTSTAT: 0,")) {
+        SysCB.SysEventFlag &= ~CONNECT_MQTT;
+      }
+    }
+    vTaskDelay(pdMS_TO_TICKS(10));
   }
+  free(data);
+  vTaskDelete(NULL);
 }

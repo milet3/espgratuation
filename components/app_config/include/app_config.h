@@ -4,51 +4,54 @@
 #include "driver/gpio.h"
 #include <stdint.h>
 
-// 系统电源控制
-#define LORA_POWER_PIN GPIO_NUM_7 // 修改：避开 LED_RUN_PIN(IO6)
-#define EM_POWER_PIN GPIO_NUM_8   // 修改：避开 CAT1_NET_STA_PIN(IO15)
+#define LED_GW001_LED_PIN GPIO_NUM_3 //
 
-// Maix Bit K210 模块 (UART 接口 + 控制)
-#define K210_TX_PIN GPIO_NUM_13   // 接 K210_RX
-#define K210_RX_PIN GPIO_NUM_14   // 接 K210_TX
-#define K210_RST_PIN GPIO_NUM_11  // 原 IO47 被 LED5 占用，改为 IO11
-#define K210_BOOT_PIN GPIO_NUM_21 // K210_IO0 (配合 RST 进入下载模式)
-#define K210_INT_PIN GPIO_NUM_10  // K210_PIN6 (视觉识别中断监听)
+// LoRa MW1268 模块 (UART 接口)
+#define LORA_UART_TX GPIO_NUM_16
+#define LORA_UART_RX GPIO_NUM_15
+#define LORA_MD0_PIN GPIO_NUM_18
+#define LORA_AUX_PIN GPIO_NUM_17
+#ifndef LORA_UART_PORT
+#define LORA_UART_PORT                                                         \
+  UART_NUM_2 // 调试阶段：从 UART0 搬到 UART2，避免干扰系统日志打印
+#endif
 
-// LoRa LLCC68 模块 (SPI 接口)
+// LoRa LLCC68 模块 (SPI 接口 - 已废弃)
+/*
 #define LORA_SPI_SCK GPIO_NUM_46
 #define LORA_SPI_MISO GPIO_NUM_38
 #define LORA_SPI_MOSI GPIO_NUM_3
-#define LORA_SPI_CS GPIO_NUM_9
+#define LORA_SPI_CS -1
 #define LORA_RESET_PIN GPIO_NUM_39
 #define LORA_BUSY_PIN GPIO_NUM_40
 #define LORA_DIO1_PIN GPIO_NUM_1
 #define LORA_TXEN_PIN GPIO_NUM_2
-#define LORA_RXEN_PIN GPIO_NUM_12
+#define LORA_RXEN_PIN -1
+*/
 
 // 4G EC800 模块 (UART 接口 + 控制)
 #define CAT1_TX_PIN GPIO_NUM_5 // 对应原理图 IO18 (避开调试串口)
 #define CAT1_RX_PIN GPIO_NUM_4 // 对应原理图 IO17 (避开调试串口)
-#define CAT1_POWER_PIN -1     // 原理图 EN 已硬件上拉 3V3，无需控制
-#define CAT1_POWER_STA_PIN -1 // 原理图未引出反馈引脚
-#define CAT1_NET_STA_PIN -1   // 原理图未引出反馈引脚
+#define CAT1_PORT                                                              \
+  UART_NUM_0 // 调试阶段：从 UART2 搬到 UART0（或在 WiFi 模式下不使用）
+#define CAT1_POWER_STATE_PIN GPIO_NUM_6 //
+#define CAT1_POWER_STA_PIN -1           // 原理图未引出反馈引脚
+#define CAT1_NET_STA_PIN -1             // 原理图未引出反馈引脚
 
 // 传感器 I2C 接口 (BH1750 光强 & SHT30 温湿度)
 #define SENSOR_I2C_SDA GPIO_NUM_48
-#define SENSOR_I2C_SCL GPIO_NUM_45
+#define SENSOR_I2C_SCL GPIO_NUM_47
 #define SENSOR_I2C_PORT I2C_NUM_0
-#define BH1750_ADDR 0x23
+#define BH1750_ADDR 0x46
 #define SHT30_ADDR 0x44
 
 // 土壤传感器 (UART 接口)
-#define SOIL_TX_PIN GPIO_NUM_41
-#define SOIL_RX_PIN GPIO_NUM_42
+#define SOIL_TX_PIN GPIO_NUM_12
+#define SOIL_RX_PIN GPIO_NUM_11
+#define SOIL_UART_POWER_PIN GPIO_NUM_10
+#define SOIL_UART_GND_PIN GPIO_NUM_9
 #define SOIL_UART_PORT UART_NUM_1
-
-// 系统指示灯 (匹配原理图 LED1, LED4, LED5)
-#define LED_RUN_PIN GPIO_NUM_6 // 系统运行指示灯 (LED1)
-// #define LED_LORA_PIN GPIO_NUM_18 // LoRa 通讯指示灯 (LED4)
-#define LED_NET_PIN GPIO_NUM_47 // 网络状态指示灯 (LED5)
+#define SOIL_UART_BAUDRATE 9600
 
 // 其他功能
 
@@ -67,11 +70,11 @@
 #define USERID "519184"                              // 用户ID
 #define GATEWAY_VERSION "1.0.0"                      // 网关固件版本号
 
-#define GW_PRODUCTID "2gs358kL0T" // 网关产品ID
+#define GW_PRODUCTID "C9fKaO0V7f" // 网关产品ID
 #define GW_DEVICENAME "GW001"     // 网关设备名称
 #define GW_DEVICESECRET                                                        \
-  "VjlCSW1EY2hadmlVc1J6dHplUXBtWm9Cd2JRcVpiUjc=" // 网关设备密钥
-#define SUB_PRODUCTID "4dTebRoyvq"               // 子设备产品ID
+  "UG95UU1MS002eUFIYmFKdzRGc1JKRmxmWE9IelAxUnM=" // 网关设备密钥
+#define SUB_PRODUCTID "lU2R784idd"               // 子设备产品ID
 #define SUB1_PDEVICENAME "D001"                  // 子设备1设备名称
 #define SUB2_PDEVICENAME "D002"                  // 子设备2设备名称
 #define SUB3_PDEVICENAME "D003"                  // 子设备3设备名称
@@ -102,6 +105,9 @@
 #define ATTRIBUTE_SOIL_N "soil_n"       // 土壤氮
 #define ATTRIBUTE_SOIL_P "soil_p"       // 土壤磷
 #define ATTRIBUTE_SOIL_K "soil_k"       // 土壤钾
+#define ATTRIBUTE_LIGHTLUX "lightlux_D001"
+#define ATTRIBUTE_TEMP "temperature_D001"
+#define ATTRIBUTE_HUMI "humidity_D001"
 #define ATTRIBUTE_FIRMWARE_VER                                                 \
   "firmware_version" // 固件版本属性标识符 (直连设备 OTA 关键)
 
@@ -109,8 +115,15 @@
 /*-------------------用于各种系统参数的结构体--------------------*/
 /*---------------------------------------------------------------*/
 typedef struct {
+  float temperature;
+  float humidity;
+  float lightlux;
+} node_sensor_data_t;
+
+typedef struct {
   uint32_t SysEventFlag; // 发生各种事件的标志变量
   uint32_t PingTimer;    // 用于记录发送PING数据包的计时器
+  node_sensor_data_t last_node_data; // 缓存子节点最新数据
 } Sys_CB;
 #define SYS_STRUCT_LEN sizeof(Sys_CB) // 用于各种系统参数的 Sys_CB结构体 长度
 
@@ -141,6 +154,9 @@ typedef struct {
 #define CONNECT_PING ((uint32_t)0x00000010) // 需要发送MQTT协议PING保活报文事件
 #define OTA_EVENT ((uint32_t)0x00000020)   // 需要进行OTA操作事件
 #define OTA_RUNNING ((uint32_t)0x00000040) // 正在进行OTA下载标志位
+#define SUB_ONLINE_READY ((uint32_t)0x00000080) // 子设备已发送上线报备标志位
+#define SUB_LORA_CONFIRMED                                                     \
+  ((uint32_t)0x00000100) // 子设备 LoRa 通信已确认标志位
 
 /* Event Group bit definitions */
 #define EVG_NET_READY (0x0001U)  // 网络连接上服务器事件

@@ -1,22 +1,26 @@
 #include "IIC_SENSOR.h"
 #include "app_config.h"
-#include "bsp_key.h"
 #include "bsp_led.h"
 #include "bsp_storage.h"
 #include "bsp_uart.h"
 #include "driver/gpio.h"
-#include "esp_mqtt.h"
+// #include "esp_mqtt.h"
 #include "esp_ota_ops.h"
 #include "esp_partition.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 // #include "k210.h"
-// #include "lora.h"
+#include "esp_mqtt.h"
+#include "mw1268_app.h"
 #include "soil_sensor.h"
 #include "wifi_cat1.h"
+#include "wifi_manager.h"
 #include <esp_event.h>
 #include <esp_log.h>
+#include <nvs_flash.h>
 #include <stdio.h>
+#include <stdlib.h> // 引入 rand()
+#include <time.h>   // 引入 time()
 
 // 实例化全局变量 info
 Info_CB info;
@@ -28,228 +32,237 @@ char DeviceNameBuff[SUN_NUMBER + 1][64] = {"GW001", "D001", "D002", "D003"};
 char ProductIdBuff[SUN_NUMBER + 1][64] = {GW_PRODUCTID, SUB_PRODUCTID,
                                           SUB_PRODUCTID, SUB_PRODUCTID};
 
-// 运行指示灯任务 (心跳灯)
-void led_run_task(void *pvParameters);
-// MQTT 数据上报任务
-void mqtt_upload_task(void *pvParameters);
+// 统一传感器数据上传任务
+void unified_sensor_upload_task(void *pvParameters);
 // OTA 写入任务
 void start_OTAWriteTask(void *pvParameters);
-// 土壤传感器数据上传任务
-// void soil_sensor_task(void *pvParameters);
-// K210 消息处理任务
-// void k210_msg_task(void *pvParameters);
 // LoRa 轮询任务
-// void lora_poll_task(void *pvParameters);
+void lora_poll_task(void *pvParameters);
 
-// 运行指示灯任务 (心跳灯)
-void led_run_task(void *pvParameters) {
-  while (1) {
-    gpio_set_level(LED_RUN_PIN, 0); // 点亮
-    vTaskDelay(pdMS_TO_TICKS(500));
-    gpio_set_level(LED_RUN_PIN, 1); // 熄灭
-    vTaskDelay(pdMS_TO_TICKS(500));
+/**
+ * @brief CAT1 延迟启动管理任务
+ * 逻辑：启动后先关闭 CAT1，等待 2 分钟，若 WiFi 未连接则启动 CAT1
+ */
+void cat1_delayed_start_task(void *pvParameters) {
+  ESP_LOGI("MAIN", "CAT1 延迟启动管理任务已启动，进入 2 分钟观察期...");
+
+  // 等待 120 秒
+  vTaskDelay(pdMS_TO_TICKS(120000));
+
+  // 检查是否已经通过 WiFi 连接成功
+  if (SysCB.SysEventFlag & CONNECT_WIFI) {
+    ESP_LOGI("MAIN",
+             "★★★ WiFi 已连接成功，CAT1 模块将保持关闭状态以节省功耗 ★★★");
+  } else {
+    ESP_LOGW("MAIN",
+             "！！！ WiFi 配网超时或未连接，正在激活 4G CAT1 备用链路 ！！！");
+
+    // 1. 初始化 4G Cat1 模块串口
+    if (Cat1_AT_Init() == ESP_OK) {
+      // 2. 执行开机序列
+      Cat1_Reset();
+
+      // 3. 启动后台辅助任务
+      xTaskCreate(start_Cat1Task, "cat1_task", 4096, NULL, 5, NULL);
+      // 4. 启动 MQTT 监控任务
+      xTaskCreate(Cat1_AT_Mqtt_Task, "at_mqtt_task", 8192, NULL, 5, NULL);
+    } else {
+      ESP_LOGE("MAIN", "4G Cat1 模块串口初始化失败");
+    }
   }
+
+  vTaskDelete(NULL);
 }
 
-// MQTT 数据上报任务
-void mqtt_upload_task(void *pvParameters) {
-  static bool version_reported =
-      false; // 恢复：用于记录本次连接是否已报备版本号
-  static bool ota_checked_once = false; // 增加：确保开机只主动查询一次 OTA
+// 统一传感器数据上传任务 (分三轮上报：网关空气 -> 网关土壤 -> 子节点数据)
+void unified_sensor_upload_task(void *pvParameters) {
+  soil_sensor_data_t soil_data;
+  bool version_reported = false;
+
+  // 初始延时，等待系统稳定
+  vTaskDelay(pdMS_TO_TICKS(10000));
 
   while (1) {
-    // 检查是否正在进行 OTA 升级
     if (SysCB.SysEventFlag & OTA_RUNNING) {
-      ESP_LOGW("UPLOAD", "OTA 升级中，暂停数据上报以保障下载带宽...");
+      vTaskDelay(pdMS_TO_TICKS(5000));
+      continue;
     }
-    // 检查是否连接上 MQTT
-    else if (SysCB.SysEventFlag & CONNECT_MQTT) {
-      // 1. 如果是新连接，先报备一次版本号（仅报备一次）
-      if (!version_reported) {
-        // 增加延时至 5 秒，确保 MQTT 链路和订阅完全稳定后再进行上报
-        vTaskDelay(pdMS_TO_TICKS(5000));
 
-        // 新版 OneNET 规范：通过属性上报触发平台对版本的感知
-        WiFi_Cat1_GatewayDataPost(25.1f, 15.1f, 83.33f);
+    if (SysCB.SysEventFlag & CONNECT_MQTT) {
+      // 第一轮：上报网关空气数据
+      float air_temp = 25.5f;
+      float air_hum = 60.0f;
+      float air_lux = 150.0f;
+      ESP_LOGI("UPLOAD", "Round 1: Uploading Gateway Air Data...");
+      WiFi_Cat1_GatewayDataPost(air_temp, air_hum, air_lux);
+      vTaskDelay(pdMS_TO_TICKS(2000)); // 轮次间隔延时
 
-        version_reported = true;
-        // 报备后等待 3 秒再传输后续数据
-        vTaskDelay(pdMS_TO_TICKS(3000));
+      // 第二轮：上报网关土壤数据
+      if (soil_sensor_read_data(&soil_data) == ESP_OK) {
+        ESP_LOGI("UPLOAD", "Round 2: Uploading Gateway Soil Data...");
+        WiFi_Cat1_SoilDataPost(soil_data.temperature, soil_data.humidity,
+                               soil_data.ec, soil_data.nitrogen,
+                               soil_data.phosphorus, soil_data.potassium);
+      } else {
+        ESP_LOGW("UPLOAD", "Round 2: Skip Soil Data (Read Failed)");
+      }
+      vTaskDelay(pdMS_TO_TICKS(2000)); // 轮次间隔延时
+
+      // 第三轮：上报子节点数据 (从缓存读取)
+      if (SysCB.last_node_data.lightlux > 0) { // 简单判断是否有有效缓存
+        ESP_LOGI("UPLOAD", "Round 3: Uploading Sub-Node Data (Proxy)...");
+        WiFi_Cat1_NodeDataPost(SysCB.last_node_data.temperature,
+                               SysCB.last_node_data.humidity,
+                               SysCB.last_node_data.lightlux);
+      } else {
+        ESP_LOGW("UPLOAD", "Round 3: Skip Node Data (No Cache)");
       }
 
-      ESP_LOGI("UPLOAD",
-               "Uploading Combined Sensor Data (Reduced Frequency)...");
-      // 优化：合并所有传感器数据一次性上报，减少 4G 网络拥塞和 MQTT Buffer 压力
-      WiFi_Cat1_AllDataPost(25.1f, 15.1f, 83.33f, // 空气数据
-                            26.5f, 35.2f, 400.0f, // 土壤温湿度/EC
-                            50.0f, 15.0f, 90.0f,  // 土壤NPK
-                            1.47f, 1.17f, 1.20f); // ADC 数据
-
-      // ★ 核心修改：第一次成功上报数据后，主动触发一次 OTA 检查 ★
-      if (!ota_checked_once) {
-        vTaskDelay(pdMS_TO_TICKS(2000)); // 稍微等 2 秒，让平台处理完刚才的上报
-        ESP_LOGI("UPLOAD",
-                 ">>> 首次上报完成，开始主动执行 Studio OTA 检查流程...");
-        Studio_OTA_CheckTask();  // 直接调用之前修改好的检查函数
-        ota_checked_once = true; // 标记为已检查，后续不再重复触发
+      if (!version_reported) {
+        version_reported = true;
       }
     } else {
-      version_reported = false; // 断开连接后重置标志位
-      ESP_LOGW("UPLOAD", "MQTT not connected, skipping upload...");
+      version_reported = false;
     }
 
-    // 优化：每 30 秒上传一次 (原 10s 太频繁，易导致 4G/PPP 链路拥塞)
+    // 完成一整轮后的长延时 (例如每 30 秒执行一个完整周期)
     vTaskDelay(pdMS_TO_TICKS(30000));
   }
 }
 
-/*
-// 土壤传感器采集任务
-void soil_sensor_task(void *pvParameters) {
-  soil_sensor_data_t soil_data;
-  char post_topic[128];
-  char post_data[512];
-
-  while (1) {
-    if (soil_sensor_read_data(&soil_data) == ESP_OK) {
-      if (SysCB.SysEventFlag & CONNECT_MQTT) {
-        snprintf(post_topic, sizeof(post_topic),
-                 "$sys/%s/%s/thing/property/post", GW_PRODUCTID, GW_DEVICENAME);
-
-        // 构造 JSON 上报 6 项土壤数据 (使用 app_config.h 中的 ATTRIBUTE_SOIL_*
-        // 宏)
-        snprintf(post_data, sizeof(post_data),
-                 "{\"id\":\"456\",\"version\":\"1.0\",\"params\":{"
-                 "\"%s\":{\"value\":%.1f}," // 土壤温度
-                 "\"%s\":{\"value\":%.1f}," // 土壤水分
-                 "\"%s\":{\"value\":%.1f}," // 土壤电导率
-                 "\"%s\":{\"value\":%.1f}," // 土壤氮
-                 "\"%s\":{\"value\":%.1f}," // 土壤磷
-                 "\"%s\":{\"value\":%.1f}"  // 土壤钾
-                 "}}",
-                 ATTRIBUTE_SOIL_TEMP, soil_data.temperature,
-                 ATTRIBUTE_SOIL_HUMI, soil_data.humidity, ATTRIBUTE_SOIL_EC,
-                 soil_data.ec, ATTRIBUTE_SOIL_N, soil_data.nitrogen,
-                 ATTRIBUTE_SOIL_P, soil_data.phosphorus, ATTRIBUTE_SOIL_K,
-                 soil_data.potassium);
-
-        esp_mqtt_publish_msg(post_topic, post_data, strlen(post_data), 0, 0);
-        ESP_LOGI("SOIL_TASK", "Soil Data Uploaded: %s", post_data);
-      }
-    }
-    vTaskDelay(pdMS_TO_TICKS(15000)); // 每 15 秒采集一次
-  }
-}
-*/
-
-/*
-// K210 消息处理任务：监听 K210 串口发送的害虫识别指令
-void k210_msg_task(void *pvParameters) {
-  uint8_t rx_buf[128];
-  while (1) {
-    // 阻塞读取 K210 串口数据
-    int len = k210_uart_read(rx_buf, sizeof(rx_buf) - 1, 100);
-    if (len > 0) {
-      rx_buf[len] = '\0';
-      ESP_LOGI("K210_TASK", "Received from K210: %s", (char *)rx_buf);
-
-      // 解析协议，例如 K210 发送 "PEST:1" 表示发现害虫
-      if (strstr((char *)rx_buf, "PEST:1") != NULL) {
-        ESP_LOGW("K210_TASK", "!!! PEST DETECTED !!!");
-        k210_report_pest_status(1); // 上报害虫状态为 1
-      } else if (strstr((char *)rx_buf, "PEST:0") != NULL) {
-        k210_report_pest_status(0); // 上报害虫状态为 0
-      }
-    }
-    vTaskDelay(pdMS_TO_TICKS(10));
-  }
-}
-*/
-
-/*
 // LoRa 轮询任务：定期检查子节点状态并触发读取
 void lora_poll_task(void *pvParameters) {
+  ESP_LOGI("LORA_TASK", "LoRa Poll Task Started");
+  static uint32_t last_test_send = 0;
+  static uint32_t last_query_send = 0;
+
+  // 1. 启动初期，主动询问子节点是否在线
+  vTaskDelay(pdMS_TO_TICKS(2000)); // 等待模块完全稳定
+  LoRa_QueryNodeOnline();
+  last_query_send = xTaskGetTickCount();
+
   while (1) {
-    // 调用 LoRa 组件的主动事件处理函数
+    // 调用 LoRa 组件的主动事件处理函数 (接收)
     LoRa_ActiveEvent();
-    // 轮询间隔 (内部已有 3s 判断，但这里也需要适当延时释放 CPU)
+
+    // 如果还没确认 LoRa 通信，每 5 秒重试询问一次
+    if (!(SysCB.SysEventFlag & SUB_LORA_CONFIRMED)) {
+      if (xTaskGetTickCount() - last_query_send > pdMS_TO_TICKS(5000)) {
+        ESP_LOGW("LORA_TASK", "未收到子节点响应，正在重试 LoRa 在线查询...");
+        LoRa_QueryNodeOnline();
+        last_query_send = xTaskGetTickCount();
+      }
+    }
+
+    // 每 30 秒发送一次测试数据（已确认通信后放慢频率）
+    if (xTaskGetTickCount() - last_test_send > pdMS_TO_TICKS(30000)) {
+      if (SysCB.SysEventFlag & SUB_LORA_CONFIRMED) {
+        LoRa_SendData((uint8_t *)"LoRa Gateway Heartbeat\r\n", 24);
+      }
+      last_test_send = xTaskGetTickCount();
+    }
+
+    // 轮询间隔
     vTaskDelay(pdMS_TO_TICKS(100));
   }
 }
-*/
+
+// 外部变量声明
+extern Sys_CB SysCB;
+
+/**
+ * @brief WiFi 状态回调函数
+ * 逻辑：当 WiFi 获取到 IP 后，自动启动 MQTT 连接
+ */
+void wifi_state_callback(wifi_state_t state) {
+  if (state == WIFI_STATE_CONNECTED) {
+    ESP_LOGI("MAIN", "WiFi 已就绪，正在启动 MQTT...");
+    esp_mqtt_app_start(NULL);
+  } else if (state == WIFI_STATE_DISCONNECTED) {
+    ESP_LOGW("MAIN", "WiFi 已断开，MQTT 将自动尝试重连或由监控任务处理");
+  }
+}
 
 void app_main(void) {
-  ESP_LOGE("FIRMWARE", "!!!!!!!! 当前固件版本号: V99.99 !!!!!!!!");
-  // 0. 初始化基础系统组件
-  ESP_ERROR_CHECK(
-      esp_event_loop_create_default()); // 修复 esp-modem
-                                        // 崩溃的关键：创建默认事件循环
+  ESP_LOGE("FIRMWARE", "!!!!!!!! 当前固件版本号: V99.99 !!!!!!!! ");
 
-  // 1. 初始化电源引脚并上电
+  // 1. 初始化 NVS (WiFi 驱动必须)
+  esp_err_t ret = nvs_flash_init();
+  if (ret == ESP_ERR_NVS_NO_FREE_PAGES ||
+      ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+    ESP_ERROR_CHECK(nvs_flash_erase());
+    ret = nvs_flash_init();
+  }
+  ESP_ERROR_CHECK(ret);
+
+  // 【新增】播种随机数，确保每次重启后的数据都是真实的随机波动
+  srand(time(NULL));
+
+  // 2. 初始化电源引脚并上电
   gpio_config_t power_conf = {
       .intr_type = GPIO_INTR_DISABLE,
       .mode = GPIO_MODE_OUTPUT,
-      .pin_bit_mask = (1ULL << EM_POWER_PIN), // (1ULL << LORA_POWER_PIN) |
+      .pin_bit_mask =
+          (1ULL << SOIL_UART_POWER_PIN) | (1ULL << SOIL_UART_GND_PIN),
       .pull_down_en = 0,
       .pull_up_en = 0,
   };
   gpio_config(&power_conf);
-  // gpio_set_level(LORA_POWER_PIN, 1); // LoRa 上电
-  gpio_set_level(EM_POWER_PIN, 1); // 传感器/外部模块上电
-  vTaskDelay(pdMS_TO_TICKS(100));  // 等待电压稳定
+
+  // 传感器/外部模块上电
+  // 土壤传感器供电 (IO10 VCC, IO9 GND)
+  gpio_set_level(SOIL_UART_POWER_PIN, 1);
+  gpio_set_level(SOIL_UART_GND_PIN, 0);
+  // LoRa 模块已通过 3V3 常供电，无需 GPIO 控制
+
+  vTaskDelay(pdMS_TO_TICKS(500)); // 增加延时至 500ms，确保传感器完全启动
+
+  // 【核心修改】初始化 CAT1 GPIO 并强制拉低（关闭模块）
+  WiFi_Cat1_InitGPIO();
+  CAT1_POWER(0);
+  ESP_LOGI("MAIN", "已预先关闭 4G CAT1 模块，优先等待 WiFi 配网...");
 
   // 2. 调用硬件初始化代码
   bsp_led_init();
-  bsp_key_init();
 
-  // 启动传感器采集后台任务 (BH1750 & SHT30)
+  EEprom_Init();
+
+  // 3. 初始化 WiFi 并启动 AP 配网服务
+  wifi_manager_init();
+  wifi_set_state_callback(wifi_state_callback); // 注册状态回调
+
+  wifi_credentials_t saved_wifi = {0};
+  if (wifi_manager_load_saved_config(&saved_wifi)) {
+    ESP_LOGI("MAIN", "Found saved WiFi SSID: %s, connecting directly",
+             saved_wifi.ssid);
+    wifi_manager_connect(saved_wifi.ssid, saved_wifi.password);
+  } else {
+    ESP_LOGI("MAIN", "No saved WiFi credentials, starting AP provisioning");
+    wifi_manager_start_ap_provisioning("ESP32_Config", "12345678");
+  }
+
+  // 暂时屏蔽 I2C 传感器采集任务 (SHT30/BH1750)，改用固定值测试
   // iic_sensor_task_start();
 
-  // 创建心跳灯任务
-  xTaskCreate(led_run_task, "led_run_task", 2048, NULL, 5, NULL);
+  // 创建统一传感器数据上传任务 (分轮次：网关空气 -> 网关土壤 -> 子节点数据)
+  xTaskCreate(unified_sensor_upload_task, "sensor_upload", 8192, NULL, 5, NULL);
 
-  // 创建数据上传任务
-  xTaskCreate(mqtt_upload_task, "mqtt_upload_task", 4096, NULL, 5, NULL);
-
-  // 初始化 NVS
-  EEprom_Init();
+  // 启动 CAT1 延迟启动管理任务 (2分钟后若无 WiFi 则启动 4G)
+  xTaskCreate(cat1_delayed_start_task, "cat1_delay", 4096, NULL, 5, NULL);
 
   // =====================================
   // 初始化外设 (引脚在 app_config.h 中定义)
   // =====================================
-
-  // 1. 初始化 LoRa LLCC68 (SPI 接口)
-  // LoRa_Init();
-
-  // 2. 初始化 4G Cat1 模块 (UART 接口 + PPPoS)
-  if (Cat1_PPPoS_Init() == ESP_OK) {
-    // 启动 Cat1 后台辅助任务 (含 OTA 监控)
-    xTaskCreate(start_Cat1Task, "cat1_task", 4096, NULL, 5, NULL);
-    // 3. 启动 MQTT 客户端
-    esp_mqtt_app_start(NULL);
-  } else {
-    ESP_LOGE("MAIN", "4G Cat1 模块初始化失败，跳过 MQTT 启动");
-  }
-
-  // 4. 初始化 K210 视觉模块 (UART 接口)
-  // k210_uart_init();
-
-  // 5. 初始化土壤传感器 (UART 接口)
   soil_sensor_init();
 
-  // 创建土壤传感器采集任务 (暂时屏蔽真实采集，改用 mqtt_upload_task
-  // 里的固定上报) xTaskCreate(soil_sensor_task, "soil_sensor_task", 4096, NULL,
-  // 5, NULL);
-
-  // 创建 K210 消息处理任务
-  // xTaskCreate(k210_msg_task, "k210_msg_task", 4096, NULL, 5, NULL);
+  // 1. 初始化 LoRa MW1268 (UART 接口)
+  LoRa_Init();
 
   // 创建 LoRa 轮询任务
-  // xTaskCreate(lora_poll_task, "lora_poll_task", 4096, NULL, 5, NULL);
+  xTaskCreate(lora_poll_task, "lora_poll_task", 4096, NULL, 5, NULL);
 
-  // 测试发送
-  // LoRa_SendData((uint8_t *)"Hello LoRa SPI", 14);
-  bsp_uart_cat1_send("AT\r\n", 4);
+  // 移除初始化时的单次测试发送，已改为在任务中循环发送
+  // bsp_uart_cat1_send("AT\r\n", 4); // 此时 CAT1 驱动未初始化，调用会导致错误
 
   // =====================================
   // 初始化 OTA 升级任务

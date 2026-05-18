@@ -26,9 +26,15 @@
 
 #define WIFI_RESET(x) gpio_set_level(WIFI_RESET_PIN, (x))
 
-#define CAT1_POWER(x) gpio_set_level(CAT1_POWER_PIN, (x))
-#define CAT1_POWER_STA gpio_get_level(CAT1_POWER_STA_PIN)
-#define CAT1_NET_STA gpio_get_level(CAT1_NET_STA_PIN)
+#define CAT1_POWER(x)                                                          \
+  do {                                                                         \
+    if (CAT1_POWER_STATE_PIN >= 0)                                             \
+      gpio_set_level(CAT1_POWER_STATE_PIN, (x));                               \
+  } while (0)
+#define CAT1_POWER_STA                                                         \
+  (CAT1_POWER_STA_PIN >= 0 ? gpio_get_level(CAT1_POWER_STA_PIN) : 0)
+#define CAT1_NET_STA                                                           \
+  (CAT1_NET_STA_PIN >= 0 ? gpio_get_level(CAT1_NET_STA_PIN) : 0)
 
 #define PACK_NUM 6 // 可以记录的最大数据包的数量
 typedef struct {
@@ -61,9 +67,10 @@ void OTAServer_process(uint8_t *data, uint16_t datalen, uint32_t page_index,
                        uint8_t is_last); // 函数说明，处理OTA服务器的数据
 void WiFi_Cat1_ActiveEvent(void); // 函数说明，WiFi模块 or 4G Cat1模块主动事件
 void WiFi_Cat1_SubOnline(char, char); // 函数说明，子设备上下线
-void WiFi_Cat1_SubDataPost(unsigned char *); // 函数说明，子设备数据上传
 void WiFi_Cat1_GatewayDataPost(float temp, float hum,
                                float lux); // 函数说明，网关数据上传
+void WiFi_Cat1_NodeDataPost(float temp, float hum,
+                            float lux); // 函数说明，子节点数据上传
 void WiFi_Cat1_SoilDataPost(float temp, float humi, float ec, float n, float p,
                             float k); // 函数说明，土壤传感器固定上报
 void WiFi_Cat1_AdcDataPost(float adc1, float adc2,
@@ -73,6 +80,12 @@ void WiFi_Cat1_AllDataPost(float air_temp, float air_hum, float air_lux,
                            float soil_n, float soil_p, float soil_k, float adc1,
                            float adc2,
                            float adc3); // 函数说明，所有传感器数据合并上报
+
+/**
+ * @brief 主动获取子设备属性
+ * @param sub_num 子设备索引 (1:D001, 2:D002...)
+ */
+void WiFi_Cat1_SubPropertyGet(char sub_num);
 void WiFi_Cat1_ReportVersion(const char *id); // 函数说明，上报当前版本号
 void WiFi_Cat1_StartOTA(const char *url, const char *token,
                         uint8_t ota_staflag); // 函数说明，开始OTA下载
@@ -82,6 +95,11 @@ void WiFi_Cat1_CheckOTATask(uint8_t); // 函数说明，查询是否有OTA任务
 void WiFi_Cat1_OTADownload(uint16_t, uint16_t,
                            uint8_t); // 函数说明，OTA下载新版本程序数据
 void start_Cat1Task(void *argument); // 函数说明，4G Cat1 后台任务
+void Cat1_AT_Mqtt_Task(
+    void *pvParameters); // 函数说明，AT 模式下的 MQTT 监控任务
+esp_err_t
+Cat1_AT_MqttPublish(const char *topic,
+                    const char *payload); // 函数说明，AT 模式下的 MQTT 发布
 
 typedef struct {
   uint16_t len; // 包体长度（字节数），仅指 data[] 实际有效数据长度

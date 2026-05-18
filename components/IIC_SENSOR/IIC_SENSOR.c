@@ -8,7 +8,7 @@
 
 static const char *TAG = "IIC_SENSOR";
 
-#define I2C_MASTER_FREQ_HZ 100000   // I2C 主机时钟频率 (100kHz)
+#define I2C_MASTER_FREQ_HZ 50000    // 降低频率至 50kHz，提高稳定性
 #define I2C_MASTER_TX_BUF_DISABLE 0 // I2C 主机不需要发送缓存
 #define I2C_MASTER_RX_BUF_DISABLE 0 // I2C 主机不需要接收缓存
 
@@ -30,14 +30,24 @@ static esp_err_t iic_sensor_init(void) {
       .master.clk_speed = I2C_MASTER_FREQ_HZ,
   };
 
+  ESP_LOGI(TAG, "Initializing I2C Master on SDA:%d SCL:%d", SENSOR_I2C_SDA,
+           SENSOR_I2C_SCL);
+
   esp_err_t err = i2c_param_config(i2c_master_port, &conf);
   if (err != ESP_OK) {
+    ESP_LOGE(TAG, "I2C param config failed: %s", esp_err_to_name(err));
     return err;
   }
 
-  return i2c_driver_install(i2c_master_port, conf.mode,
-                            I2C_MASTER_RX_BUF_DISABLE,
-                            I2C_MASTER_TX_BUF_DISABLE, 0);
+  err =
+      i2c_driver_install(i2c_master_port, conf.mode, I2C_MASTER_RX_BUF_DISABLE,
+                         I2C_MASTER_TX_BUF_DISABLE, 0);
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "I2C driver install failed: %s", esp_err_to_name(err));
+    return err;
+  }
+
+  return ESP_OK;
 }
 
 /**
@@ -51,15 +61,19 @@ static esp_err_t bh1750_read_lux(float *lux) {
 
   esp_err_t err = i2c_master_write_to_device(SENSOR_I2C_PORT, BH1750_ADDR, &cmd,
                                              1, 1000 / portTICK_PERIOD_MS);
-  if (err != ESP_OK)
+  if (err != ESP_OK) {
+    ESP_LOGD(TAG, "BH1750 write cmd failed: %s", esp_err_to_name(err));
     return err;
+  }
 
   vTaskDelay(pdMS_TO_TICKS(180));
 
   err = i2c_master_read_from_device(SENSOR_I2C_PORT, BH1750_ADDR, data, 2,
                                     1000 / portTICK_PERIOD_MS);
-  if (err != ESP_OK)
+  if (err != ESP_OK) {
+    ESP_LOGD(TAG, "BH1750 read data failed: %s", esp_err_to_name(err));
     return err;
+  }
 
   uint16_t raw_lux = (data[0] << 8) | data[1];
   *lux = (float)raw_lux / 1.2;
@@ -77,15 +91,19 @@ static esp_err_t sht30_read_temp_humi(float *temp, float *hum) {
 
   esp_err_t err = i2c_master_write_to_device(SENSOR_I2C_PORT, SHT30_ADDR, cmd,
                                              2, 1000 / portTICK_PERIOD_MS);
-  if (err != ESP_OK)
+  if (err != ESP_OK) {
+    ESP_LOGD(TAG, "SHT30 write cmd failed: %s", esp_err_to_name(err));
     return err;
+  }
 
   vTaskDelay(pdMS_TO_TICKS(20));
 
   err = i2c_master_read_from_device(SENSOR_I2C_PORT, SHT30_ADDR, data, 6,
                                     1000 / portTICK_PERIOD_MS);
-  if (err != ESP_OK)
+  if (err != ESP_OK) {
+    ESP_LOGD(TAG, "SHT30 read data failed: %s", esp_err_to_name(err));
     return err;
+  }
 
   uint16_t raw_temp = (data[0] << 8) | data[1];
   uint16_t raw_hum = (data[3] << 8) | data[4];
@@ -110,7 +128,12 @@ static void iic_sensor_task(void *pvParameters) {
       g_sensor_data.humidity = hum;
       xSemaphoreGive(g_sensor_mutex);
     } else {
-      ESP_LOGW(TAG, "Failed to read SHT30");
+      static uint32_t last_sht_fail_log = 0;
+      if (esp_log_timestamp() - last_sht_fail_log >
+          30000) { // 每 30 秒才打印一次错误
+        ESP_LOGW(TAG, "Failed to read SHT30 (silencing logs for 30s)");
+        last_sht_fail_log = esp_log_timestamp();
+      }
     }
 
     // 读取 BH1750
@@ -119,7 +142,12 @@ static void iic_sensor_task(void *pvParameters) {
       g_sensor_data.lux = lux;
       xSemaphoreGive(g_sensor_mutex);
     } else {
-      ESP_LOGW(TAG, "Failed to read BH1750");
+      static uint32_t last_bh_fail_log = 0;
+      if (esp_log_timestamp() - last_bh_fail_log >
+          30000) { // 每 30 秒才打印一次错误
+        ESP_LOGW(TAG, "Failed to read BH1750 (silencing logs for 30s)");
+        last_bh_fail_log = esp_log_timestamp();
+      }
     }
 
     ESP_LOGD(TAG, "Temp: %.2f, Hum: %.2f, Lux: %.2f", temp, hum, lux);

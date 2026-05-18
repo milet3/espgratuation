@@ -4,25 +4,27 @@
 #include "driver/uart.h"
 #include "esp_event.h"
 #include "esp_log.h"
+/*
 #include "esp_modem_api.h"
 #include "esp_netif.h"
 #include "esp_netif_ip_addr.h"
 #include "esp_netif_ppp.h"
 #include "esp_netif_types.h"
+*/
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
 #include "freertos/queue.h"
 #include "freertos/task.h"
-#include "lora.h"
-#include "lwip/inet.h"
+// #include "lora.h"
+// #include "lwip/inet.h"
 #include "sdkconfig.h"
 #include "wifi_cat1.h"
 #include <assert.h>
 
 static const char *TAG = "BSP_UART";
 extern Sys_CB SysCB;
-static esp_netif_t *cat1_netif = NULL;
-static EventGroupHandle_t event_group = NULL;
+// static esp_netif_t *cat1_netif = NULL;
+// static EventGroupHandle_t event_group = NULL;
 const int CONNECT_BIT = BIT0;
 // 串口事件队列句柄，用于在任务中阻塞等待串口数据
 // static QueueHandle_t uart_lora_queue;
@@ -32,6 +34,7 @@ const int CONNECT_BIT = BIT0;
  *
  * @param error 错误类型
  */
+/*
 static void on_error_cb(esp_modem_terminal_error_t error) {
   if (error == ESP_MODEM_TERMINAL_BUFFER_OVERFLOW) {
     ESP_LOGW(TAG, "esp-modem 串口缓冲区溢出");
@@ -41,11 +44,13 @@ static void on_error_cb(esp_modem_terminal_error_t error) {
     ESP_LOGE(TAG, "esp-modem 发生未知错误");
   }
 }
+*/
 
 // PPP 网络状态事件回调：
 // - 当 PPPoS 成功拨号并获得 IP 时，ESP-IDF 会通过 IP_EVENT_PPP_GOT_IP 通知
 // - 当 PPP 链路断开、失去 IP 时，会通过 IP_EVENT_PPP_LOST_IP 通知
 // 这里通常用事件组(EventGroup)把“拿到 IP 了”这个状态同步给拨号流程的主任务。
+/*
 static void on_ip_event(void *arg, esp_event_base_t event_base,
                         int32_t event_id, void *event_data) {
   if (event_id == IP_EVENT_PPP_GOT_IP) {
@@ -75,6 +80,105 @@ static void on_ip_event(void *arg, esp_event_base_t event_base,
     SysCB.SysEventFlag &= ~CONNECT_CAT1;
   }
 }
+*/
+
+esp_err_t Cat1_AT_Init(void) {
+  // 1. 初始化 4G 模块控制引脚
+  WiFi_Cat1_InitGPIO();
+
+  // 【安全检查】如果 CAT1 被分配到了 UART0 (调试模式)，则跳过初始化
+  if (UART_NUM_CAT1 == UART_NUM_0) {
+    ESP_LOGW(TAG, "检测到 CAT1 被分配至 UART0 (调试模式)，将跳过 4G "
+                  "模块初始化以避免干扰控制台");
+    return ESP_OK;
+  }
+
+  ESP_LOGI(TAG, "正在初始化 Cat1 模块串口 (AT 模式)...");
+
+  bool synced = false;
+
+  // 2. 配置 UART
+  uart_config_t uart_config = {
+      .baud_rate = 115200,
+      .data_bits = UART_DATA_8_BITS,
+      .parity = UART_PARITY_DISABLE,
+      .stop_bits = UART_STOP_BITS_1,
+      .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
+      .source_clk = UART_SCLK_DEFAULT,
+  };
+
+  esp_err_t ret =
+      uart_driver_install(UART_NUM_CAT1, UART_BUF_SIZE * 2, 0, 0, NULL, 0);
+  if (ret != ESP_OK) {
+    return ret;
+  }
+  ret = uart_param_config(UART_NUM_CAT1, &uart_config);
+  if (ret != ESP_OK) {
+    return ret;
+  }
+  ret = uart_set_pin(UART_NUM_CAT1, CAT1_TX_PIN, CAT1_RX_PIN,
+                     UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
+  if (ret != ESP_OK) {
+    return ret;
+  }
+
+  // 3. 硬件上电稳定逻辑 (移除硬件 IO 控制，仅保留延时等待模块启动)
+  ESP_LOGI(TAG, "正在等待4G模块启动稳定 (5秒)...");
+  vTaskDelay(pdMS_TO_TICKS(5000));
+
+  // 4. 发送 AT 测试同步
+  ESP_LOGI(TAG, "正在进行 AT 同步...");
+  for (int i = 0; i < 5; i++) {
+    uart_write_bytes(UART_NUM_CAT1, "AT\r\n", 4);
+    vTaskDelay(pdMS_TO_TICKS(500));
+
+    uint8_t data[128];
+    int len = uart_read_bytes(UART_NUM_CAT1, data, sizeof(data) - 1,
+                              pdMS_TO_TICKS(500));
+    if (len > 0) {
+      data[len] = '\0';
+      ESP_LOGI(TAG, "Cat1 响应: %s", (char *)data);
+      if (strstr((char *)data, "OK")) {
+        ESP_LOGI(TAG, "Cat1 AT 同步成功");
+        synced = true;
+        break;
+      }
+    }
+    ESP_LOGW(TAG, "AT 同步重试 (%d/5)...", i + 1);
+  }
+
+  if (!synced) {
+    ESP_LOGE(TAG, "Cat1 AT 同步失败");
+    return ESP_FAIL;
+  }
+
+  // 5. 检查 SIM 卡和网络状态
+  ESP_LOGI(TAG, "正在检查 SIM 卡和网络状态...");
+  const char *check_cmds[] = {
+      "AT+CPIN?\r\n",  // 检查 SIM 卡
+      "AT+CSQ\r\n",    // 检查信号强度
+      "AT+CREG?\r\n",  // 检查网络注册
+      "AT+CGATT?\r\n", // 检查 GPRS 附着
+  };
+
+  for (int i = 0; i < sizeof(check_cmds) / sizeof(char *); i++) {
+    uart_write_bytes(UART_NUM_CAT1, check_cmds[i], strlen(check_cmds[i]));
+    vTaskDelay(pdMS_TO_TICKS(1000));
+
+    uint8_t data[128];
+    int len = uart_read_bytes(UART_NUM_CAT1, data, sizeof(data) - 1,
+                              pdMS_TO_TICKS(500));
+    if (len > 0) {
+      data[len] = '\0';
+      ESP_LOGI(TAG, "CMD %s -> %s", check_cmds[i], (char *)data);
+    }
+  }
+
+  SysCB.SysEventFlag |= CONNECT_CAT1; // 标记模块已就绪
+  return ESP_OK;
+}
+
+/*
 esp_err_t Cat1_PPPoS_Init(void) {
   // 1. 初始化 4G 模块引脚
   WiFi_Cat1_InitGPIO();
@@ -145,10 +249,7 @@ esp_err_t Cat1_PPPoS_Init(void) {
     }
 
     if (i == 3) {
-      ESP_LOGW(TAG, "同步失败，尝试硬件下电重启模块 (EM_POWER_PIN)...");
-      gpio_set_level(EM_POWER_PIN, 0);
-      vTaskDelay(pdMS_TO_TICKS(2000));
-      gpio_set_level(EM_POWER_PIN, 1);
+      ESP_LOGW(TAG, "同步失败，尝试等待模块重启稳定...");
       vTaskDelay(pdMS_TO_TICKS(10000)); // 等待重启稳定
     }
 
@@ -258,6 +359,7 @@ esp_err_t Cat1_PPPoS_Init(void) {
     return ESP_ERR_TIMEOUT;
   }
 }
+*/
 
 int bsp_uart_cat1_send(const char *data, int len) {
   return uart_write_bytes(UART_NUM_CAT1, data, len);

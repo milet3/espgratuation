@@ -11,6 +11,7 @@
 #include "esp_log.h"
 #include "esp_netif.h"
 #include "mqtt_client.h"
+#include "mw1268_app.h"
 #include "wifi_cat1.h"
 #include <stddef.h>
 #include <stdint.h>
@@ -37,7 +38,7 @@ extern Sys_CB SysCB;
 static uint32_t disconnect_start_tick = 0;
 #define MQTT_DISCONNECT_RESET_TIMEOUT_MS (180000) // 3分钟无法连接则重启网络
 
-char TopicBuff[7][128]; // 二维数组，存放需要订阅和发布的主题(Topic)字符串
+char TopicBuff[10][128]; // 二维数组，存放需要订阅和发布的主题(Topic)字符串
 char TopicNum; // 记录实际使用的主题数量
 char Mqtt_Password[512]; // 存放计算出来的鉴权密码 (扩大到 512 字节防截断)
 
@@ -110,8 +111,37 @@ void MQTT_Init(void) {
   // 属性设置下发 (必选)
   snprintf(TopicBuff[0], sizeof(TopicBuff[0]), "$sys/%s/%s/thing/property/set",
            GW_PRODUCTID, GW_DEVICENAME);
+  // 属性上报回复 (新增：用于排查上报失败原因)
+  snprintf(TopicBuff[1], sizeof(TopicBuff[1]),
+           "$sys/%s/%s/thing/property/post/reply", GW_PRODUCTID, GW_DEVICENAME);
 
-  TopicNum = 1;
+  // 子设备登录回复 (新增：确保子设备能正常在线)
+  snprintf(TopicBuff[2], sizeof(TopicBuff[2]),
+           "$sys/%s/%s/thing/sub/login/reply", GW_PRODUCTID, GW_DEVICENAME);
+
+  // 子设备登出回复 (新增)
+  snprintf(TopicBuff[3], sizeof(TopicBuff[3]),
+           "$sys/%s/%s/thing/sub/logout/reply", GW_PRODUCTID, GW_DEVICENAME);
+
+  // 子设备数据上报回复 (新增)
+  snprintf(TopicBuff[4], sizeof(TopicBuff[4]),
+           "$sys/%s/%s/thing/sub/property/post/reply", GW_PRODUCTID,
+           GW_DEVICENAME);
+
+  // 子设备属性获取回复 (修正：使用下划线 get_reply)
+  snprintf(TopicBuff[5], sizeof(TopicBuff[5]),
+           "$sys/%s/%s/thing/sub/property/get_reply", GW_PRODUCTID,
+           GW_DEVICENAME);
+
+  // 批量上报回复 (新增：用于确认 pack/post 是否成功)
+  snprintf(TopicBuff[6], sizeof(TopicBuff[6]),
+           "$sys/%s/%s/thing/pack/post/reply", GW_PRODUCTID, GW_DEVICENAME);
+
+  // 子设备属性设置下发 (关键新增：用于接收手机端对 D001 的控制)
+  snprintf(TopicBuff[7], sizeof(TopicBuff[7]),
+           "$sys/%s/%s/thing/sub/property/set", GW_PRODUCTID, GW_DEVICENAME);
+
+  TopicNum = 8;
 }
 
 /**
@@ -139,11 +169,22 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base,
       int msg_id = esp_mqtt_client_subscribe(client, TopicBuff[i], 1);
       ESP_LOGI(TAG, "正在订阅主题 [%s], msg_id=%d", TopicBuff[i], msg_id);
     }
+
+    // [逻辑调整] 仅在 LoRa 通信已确认的情况下才进行上线报备
+    if ((SysCB.SysEventFlag & SUB_LORA_CONFIRMED) &&
+        !(SysCB.SysEventFlag & SUB_ONLINE_READY)) {
+      ESP_LOGI(TAG, "LoRa 已预先确认，立即执行子设备上线报备");
+      WiFi_Cat1_SubOnline(1, 1);
+      SysCB.SysEventFlag |= SUB_ONLINE_READY;
+    } else {
+      ESP_LOGW(TAG, "LoRa 尚未确认或已在线，等待 LoRa 任务触发上线报备");
+    }
     break;
 
   case MQTT_EVENT_DISCONNECTED:
     ESP_LOGI(TAG, "MQTT_EVENT_DISCONNECTED");
     SysCB.SysEventFlag &= ~CONNECT_MQTT;
+    SysCB.SysEventFlag &= ~SUB_ONLINE_READY; // 断连时重置子设备上线标志位
 
     // 如果不在 OTA 升级中，则进行重连超时判断
     if (!(SysCB.SysEventFlag & OTA_RUNNING)) {
@@ -193,6 +234,151 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base,
     ESP_LOGI(TAG, "收到原始数据: %.*s", event->data_len, event->data);
 
     // --- 业务逻辑处理区 ---
+    // 1. 处理子设备上线回复
+    if (strstr(topic_tmp, "thing/sub/login/reply")) {
+      cJSON *root = cJSON_ParseWithLength(event->data, event->data_len);
+      if (root) {
+        cJSON *code = cJSON_GetObjectItem(root, "code");
+        if (code && code->valueint == 200) {
+          ESP_LOGW(TAG, ">>> [调试信息] 子设备上线成功！服务器已确认。");
+        } else {
+          ESP_LOGE(TAG, ">>> [调试信息] 子设备上线失败，错误码: %d",
+                   code ? code->valueint : -1);
+        }
+        cJSON_Delete(root);
+      }
+    }
+
+    // 2. 处理子设备数据上报回复
+    if (strstr(topic_tmp, "thing/sub/property/post/reply")) {
+      cJSON *root = cJSON_ParseWithLength(event->data, event->data_len);
+      if (root) {
+        cJSON *code = cJSON_GetObjectItem(root, "code");
+        if (code && code->valueint == 200) {
+          ESP_LOGW(TAG, ">>> [调试信息] 子设备数据上报成功！");
+        } else {
+          ESP_LOGE(TAG, ">>> [调试信息] 子设备数据上报失败，错误码: %d",
+                   code ? code->valueint : -1);
+        }
+        cJSON_Delete(root);
+      }
+    }
+
+    // 3. 处理子设备属性获取回复
+    if (strstr(topic_tmp, "thing/sub/property/get_reply")) {
+      cJSON *root = cJSON_ParseWithLength(event->data, event->data_len);
+      if (root) {
+        cJSON *code = cJSON_GetObjectItem(root, "code");
+        if (code && code->valueint == 200) {
+          cJSON *data = cJSON_GetObjectItem(root, "data");
+          if (data) {
+            char *data_str = cJSON_PrintUnformatted(data);
+            ESP_LOGW(TAG, ">>> [调试信息] 成功获取子设备最新属性: %s",
+                     data_str);
+            free(data_str);
+          }
+        } else {
+          ESP_LOGE(TAG, ">>> [调试信息] 获取子设备属性失败，错误码: %d",
+                   code ? code->valueint : -1);
+        }
+        cJSON_Delete(root);
+      }
+    }
+
+    // 4. 处理批量上报回复 (pack/post)
+    if (strstr(topic_tmp, "thing/pack/post/reply")) {
+      cJSON *root = cJSON_ParseWithLength(event->data, event->data_len);
+      if (root) {
+        cJSON *code = cJSON_GetObjectItem(root, "code");
+        if (code && code->valueint == 200) {
+          ESP_LOGW(TAG, ">>> [调试信息] 批量数据上报 (Pack/Post) 成功！");
+        } else {
+          cJSON *msg = cJSON_GetObjectItem(root, "msg");
+          ESP_LOGE(TAG, ">>> [调试信息] 批量数据上报失败, code: %d, msg: %s",
+                   code ? code->valueint : -1,
+                   (msg && msg->valuestring) ? msg->valuestring : "unknown");
+        }
+        cJSON_Delete(root);
+      }
+    }
+
+    // 5. 处理云端属性设置 (Property Set - 兼容网关和子设备)
+    if (strstr(topic_tmp, "thing/property/set") ||
+        strstr(topic_tmp, "thing/sub/property/set")) {
+      ESP_LOGW(TAG, ">>> 收到云端属性设置指令!");
+      cJSON *root = cJSON_ParseWithLength(event->data, event->data_len);
+      if (root) {
+        // 尝试获取消息 ID 用于回复
+        char reply_id[32] = "20240513";
+        cJSON *msg_id_obj = cJSON_GetObjectItem(root, "id");
+        if (msg_id_obj && msg_id_obj->valuestring) {
+          strncpy(reply_id, msg_id_obj->valuestring, sizeof(reply_id) - 1);
+        }
+
+        cJSON *params = cJSON_GetObjectItem(root, "params");
+        if (params) {
+          // A. 如果是子设备控制，params 内部可能还有一个 params 嵌套
+          cJSON *sub_params = cJSON_GetObjectItem(params, "params");
+          cJSON *target_params = sub_params ? sub_params : params;
+
+          // 1. 查找 PestAlarm (ATTRIBUTE1) -> 控制网关 LED
+          cJSON *pest_obj = cJSON_GetObjectItem(target_params, ATTRIBUTE1);
+          if (pest_obj) {
+            int val = pest_obj->valueint;
+            ESP_LOGW(TAG, ">>> [控制指令] 设置网关 PestAlarm 为: %d", val);
+            gpio_set_level(LED_GW001_LED_PIN, val ? 0 : 1);
+
+            // 状态回报
+            cJSON *reply_root = cJSON_CreateObject();
+            cJSON_AddStringToObject(reply_root, "id", reply_id);
+            cJSON_AddStringToObject(reply_root, "version", "1.0");
+            cJSON *reply_params = cJSON_AddObjectToObject(reply_root, "params");
+            cJSON_AddNumberToObject(reply_params, ATTRIBUTE1, val);
+
+            char *reply_data = cJSON_PrintUnformatted(reply_root);
+            if (reply_data) {
+              char reply_topic[128];
+              snprintf(reply_topic, sizeof(reply_topic),
+                       "$sys/%s/%s/thing/property/post", GW_PRODUCTID,
+                       GW_DEVICENAME);
+              esp_mqtt_publish_msg(reply_topic, reply_data, strlen(reply_data),
+                                   1, 0);
+              free(reply_data);
+            }
+            cJSON_Delete(reply_root);
+          }
+
+          // 2. 查找 PowerSwitch_2 (ATTRIBUTE2) -> 控制子节点 LED
+          cJSON *node_led_obj = cJSON_GetObjectItem(target_params, ATTRIBUTE2);
+          if (node_led_obj) {
+            int val = node_led_obj->valueint;
+            ESP_LOGW(TAG, ">>> [控制指令] 设置子节点 LED 为: %d", val);
+            LoRa_ControlNodeLED(val);
+
+            // 状态回报 (子设备控制回复同样建议发往网关的主题进行同步)
+            cJSON *reply_root = cJSON_CreateObject();
+            cJSON_AddStringToObject(reply_root, "id", reply_id);
+            cJSON_AddStringToObject(reply_root, "version", "1.0");
+            cJSON *reply_params = cJSON_AddObjectToObject(reply_root, "params");
+            cJSON_AddNumberToObject(reply_params, ATTRIBUTE2, val);
+
+            char *reply_data = cJSON_PrintUnformatted(reply_root);
+            if (reply_data) {
+              char reply_topic[128];
+              snprintf(reply_topic, sizeof(reply_topic),
+                       "$sys/%s/%s/thing/property/post", GW_PRODUCTID,
+                       GW_DEVICENAME);
+              esp_mqtt_publish_msg(reply_topic, reply_data, strlen(reply_data),
+                                   1, 0);
+              free(reply_data);
+            }
+            cJSON_Delete(reply_root);
+          }
+        }
+        cJSON_Delete(root);
+      }
+    }
+
     // 目前仅处理属性设置等基础逻辑，OTA 已改为开机主动查询架构
     break;
   }
@@ -232,10 +418,9 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base,
  * @return esp_err_t 返回 ESP_OK 表示启动成功
  */
 esp_err_t esp_mqtt_app_start(const char *broker_uri) {
-  // 增加延时，确保 PPP 链路完全稳定后再启动 MQTT
-  // 4G 拨号后，网络栈和 DNS 可能需要几秒钟才能完全可用
-  ESP_LOGI(TAG, "正在等待网络和 DNS 稳定 (5秒)...");
-  vTaskDelay(pdMS_TO_TICKS(5000));
+  // 移除硬编码延时，防止阻塞事件回调导致 WDT 超时
+  // ESP_LOGI(TAG, "正在等待网络和 DNS 稳定 (5秒)...");
+  // vTaskDelay(pdMS_TO_TICKS(5000));
 
   // 检查网络状态 (调试用)
   esp_netif_t *netif = esp_netif_get_handle_from_ifkey("PPP_DEF");
@@ -273,9 +458,8 @@ esp_err_t esp_mqtt_app_start(const char *broker_uri) {
       .network.timeout_ms = 20000, // 增加网络超时时间到 20 秒
       .network.reconnect_timeout_ms = 5000, // 重连间隔
       .buffer.size = 8192,                  // 极限增大读缓冲区 (8KB)
-      .buffer.out_size = 4096,              // 写缓冲区
-      .task.stack_size =
-          8192, // 修正：在 ESP-IDF v5.x 中，栈大小字段为 .task.stack_size
+      .buffer.out_size = 8192,              // 写缓冲区也增大到 8KB
+      .task.stack_size = 8192,              // 增加任务栈大小
   };
 
   // 初始化客户端

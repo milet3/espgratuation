@@ -26,6 +26,24 @@ static uint16_t modbus_crc16(uint8_t *data, uint16_t len) {
 }
 
 esp_err_t soil_sensor_init(void) {
+  // 0. 初始化电源和地引脚
+  gpio_config_t io_conf = {
+      .intr_type = GPIO_INTR_DISABLE,
+      .mode = GPIO_MODE_OUTPUT,
+      .pin_bit_mask =
+          (1ULL << SOIL_UART_POWER_PIN) | (1ULL << SOIL_UART_GND_PIN),
+      .pull_down_en = 0,
+      .pull_up_en = 0,
+  };
+  gpio_config(&io_conf);
+
+  // 设置电源引脚为高，地引脚为低
+  gpio_set_level(SOIL_UART_POWER_PIN, 1);
+  gpio_set_level(SOIL_UART_GND_PIN, 0);
+
+  // 给传感器一点启动时间
+  vTaskDelay(pdMS_TO_TICKS(500));
+
   uart_config_t uart_config = {
       .baud_rate = 9600, // 土壤传感器使用 9600
       .data_bits = UART_DATA_8_BITS,
@@ -72,6 +90,9 @@ esp_err_t soil_sensor_read_data(soil_sensor_data_t *data) {
 
   if (len < 21) {
     ESP_LOGW(TAG, "Soil Sensor response timeout or length error: %d", len);
+    if (len > 0) {
+      ESP_LOG_BUFFER_HEX("SOIL_RAW_FAIL", rx_buf, len); // 打印错误时的原始数据
+    }
     return ESP_FAIL;
   }
 
