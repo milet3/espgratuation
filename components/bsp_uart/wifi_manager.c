@@ -23,6 +23,13 @@
 
 #define TAG "WIFI_MANAGER"
 
+/*
+ * WiFi 管理模块职责：
+ * 1. 启动后优先读取历史 WiFi 配置，存在则直接以 STA 模式连接路由器。
+ * 2. 没有历史配置时，启动 AP 配网热点并提供网页配置入口。
+ * 3. 配网成功拿到 IP 后，再把 SSID/密码写入项目封装的 EEprom/NVS。
+ * 4. 连接成功后关闭 AP、DNS、HTTP 配网服务，回到普通 STA 工作模式。
+ */
 #define MAX_CONNECT_RETRY 6
 #define CAPTIVE_DNS_PORT 53
 #define CAPTIVE_DNS_BUF_SIZE 512
@@ -40,20 +47,28 @@ static p_wifi_state_callback wifi_state_cb = NULL; // WiFi 状态回调函数
 
 static bool is_sta_connected = false; // 是否连接成功
 
-static bool sta_configured = false;
-static bool is_ap_active = false;
-static bool pending_credentials_valid = false;
+static bool sta_configured = false; // 是否已经设置过 STA 目标路由器参数
+static bool is_ap_active = false;   // 当前是否处于 AP 配网状态
+static bool pending_credentials_valid = false; // 是否有等待保存的 WiFi 凭据
 static wifi_credentials_t pending_credentials = {0};
-static TaskHandle_t dns_task_handle = NULL;
-static TaskHandle_t wifi_cleanup_task_handle = NULL;
-static volatile bool dns_server_running = false;
+static TaskHandle_t dns_task_handle = NULL; // DNS 劫持任务句柄
+static TaskHandle_t wifi_cleanup_task_handle = NULL; // AP 收尾任务句柄
+static volatile bool dns_server_running = false; // 控制 DNS 任务退出
 static const char captive_portal_url[] = "http://" CAPTIVE_PORTAL_IP "/";
+// AP 配网页展示的是启动配网前缓存的扫描结果，避免手机连接 AP 后再扫描导致断连。
+static wifi_ap_record_t scanned_ap_records[WIFI_SCAN_MAX_AP] = {0};
+static uint16_t scanned_ap_count = 0;
 
 static esp_netif_t *sta_netif = NULL;
 static esp_netif_t *ap_netif = NULL;
 
 static void wifi_connected_cleanup_task(void *pvParameters);
 
+/*
+ * 保存待确认的 WiFi 凭据。
+ * 注意：这里只在 GOT_IP 后调用，表示密码确实能连上路由器。
+ * 不在用户提交表单时立即保存，避免错误密码覆盖掉原来的可用配置。
+ */
 static void save_pending_wifi_credentials(void) {
   if (!pending_credentials_valid) {
     return;
@@ -86,7 +101,10 @@ static void cat1_shutdown_task(void *pvParameters) {
   vTaskDelete(NULL); // 任务结束删除自己
 }
 
-/** 事件回调函数
+/** WiFi/IP 事件回调函数
+ * 这里运行在 ESP-IDF 默认事件循环上下文里，应尽量短小。
+ * 耗时动作或可能涉及事件系统的动作，例如 MQTT 启动，要放到外部任务中处理。
+ *
  * @param arg   用户传递的参数
  * @param event_base    事件类别
  * @param event_id      事件ID
@@ -97,7 +115,7 @@ static void event_handler(void *arg, esp_event_base_t event_base,
                           int32_t event_id, void *event_data) {
   if (event_base == WIFI_EVENT) {
     switch (event_id) {
-    case WIFI_EVENT_STA_START: // 连接成功
+    case WIFI_EVENT_STA_START: // STA 接口启动完成，开始尝试连接目标路由器
     {
       wifi_mode_t mode;
       esp_wifi_get_mode(&mode);
@@ -107,7 +125,7 @@ static void event_handler(void *arg, esp_event_base_t event_base,
     }
     case WIFI_EVENT_STA_CONNECTED: // 已经连接
     {
-      ESP_LOGI(TAG, "物理链路已连接，等待分配IP...");
+      ESP_LOGD(TAG, "物理链路已连接，等待分配IP...");
       break;
     }
     case WIFI_EVENT_STA_DISCONNECTED: // 断开连接
@@ -117,6 +135,7 @@ static void event_handler(void *arg, esp_event_base_t event_base,
         wifi_state_cb(
             WIFI_STATE_DISCONNECTED); // 调用状态回调函数，通知断开连接
 
+      // 短时间断线时进行有限次数重连，避免一直阻塞在 WiFi 重试中。
       if (sta_connect_count < MAX_CONNECT_RETRY) {
         wifi_mode_t mode;
         esp_wifi_get_mode(&mode);
@@ -134,7 +153,7 @@ static void event_handler(void *arg, esp_event_base_t event_base,
     {
       wifi_event_ap_staconnected_t *event =
           (wifi_event_ap_staconnected_t *)event_data;
-      ESP_LOGI(TAG, "station " MACSTR " join, AID=%d", MAC2STR(event->mac),
+      ESP_LOGD(TAG, "station " MACSTR " join, AID=%d", MAC2STR(event->mac),
                event->aid);
       break;
     }
@@ -142,7 +161,7 @@ static void event_handler(void *arg, esp_event_base_t event_base,
     {
       wifi_event_ap_stadisconnected_t *event =
           (wifi_event_ap_stadisconnected_t *)event_data;
-      ESP_LOGI(TAG, "station " MACSTR " leave, AID=%d", MAC2STR(event->mac),
+      ESP_LOGD(TAG, "station " MACSTR " leave, AID=%d", MAC2STR(event->mac),
                event->aid);
       break;
     }
@@ -158,6 +177,7 @@ static void event_handler(void *arg, esp_event_base_t event_base,
       sta_connect_count = 0;
       is_sta_connected = true;            // 标记为已连接
       SysCB.SysEventFlag |= CONNECT_WIFI; // 置位连接WiFi成功事件
+      // 只有拿到 IP 才认为配网真正成功，此时再保存账号密码。
       save_pending_wifi_credentials();
       if (wifi_state_cb)
         wifi_state_cb(WIFI_STATE_CONNECTED); // 调用状态回调函数，通知连接成功
@@ -182,6 +202,15 @@ static void event_handler(void *arg, esp_event_base_t event_base,
 
 void wifi_set_state_callback(p_wifi_state_callback cb) { wifi_state_cb = cb; }
 
+void wifi_manager_cancel_connect_retry(void) {
+  sta_configured = false;
+  sta_connect_count = MAX_CONNECT_RETRY;
+}
+
+/*
+ * 从项目自己的 EEprom/NVS 封装读取历史 WiFi 配置。
+ * magic 字段用于判断这块数据是否真的是 WiFi 配置，避免误读未初始化数据。
+ */
 bool wifi_manager_load_saved_config(wifi_credentials_t *credentials) {
   if (credentials == NULL) {
     return false;
@@ -216,9 +245,10 @@ void wifi_manager_init(void) {
   wifi_init_config_t wifi_cfg = WIFI_INIT_CONFIG_DEFAULT(); // 初始化 WiFi 配置
   ESP_ERROR_CHECK(esp_wifi_init(&wifi_cfg));                // 初始化 WiFi
 
-  // 注册统一的事件处理函数
+  // WiFi 驱动自己的配置只放在 RAM，业务凭据统一由 EEprom_WriteData 管理。
   ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM));
 
+  // 注册 WiFi 和 IP 事件。连接、断线、获取 IP 都会回到 event_handler。
   ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID,
                                              event_handler, NULL));
   ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP,
@@ -228,7 +258,7 @@ void wifi_manager_init(void) {
       esp_wifi_set_mode(WIFI_MODE_STA)); // 设置 WiFi 模式为 STA 模式
   ESP_ERROR_CHECK(esp_wifi_start());     // 启动 WiFi
 
-  ESP_LOGI(TAG, "WiFi manager initialized"); // 打印初始化信息
+  ESP_LOGI(TAG, "WiFi 管理器已初始化"); // 打印初始化信息
 }
 
 /** 连接wifi
@@ -245,6 +275,8 @@ esp_err_t wifi_manager_connect(const char *ssid, const char *password) {
   }
 
   sta_configured = true;
+  // 先把准备连接的账号密码放到 pending_credentials。
+  // 是否真正写入 Flash，要等 IP_EVENT_STA_GOT_IP 确认成功。
   memset(&pending_credentials, 0, sizeof(pending_credentials));
   pending_credentials.magic = WIFI_CREDENTIAL_MAGIC;
   snprintf(pending_credentials.ssid, sizeof(pending_credentials.ssid), "%s",
@@ -252,6 +284,7 @@ esp_err_t wifi_manager_connect(const char *ssid, const char *password) {
   snprintf(pending_credentials.password,
            sizeof(pending_credentials.password), "%s", password);
 
+  // 如果本次连接参数与历史配置一致，则无需重复写 Flash，减少擦写。
   wifi_credentials_t saved_credentials = {0};
   pending_credentials_valid =
       !wifi_manager_load_saved_config(&saved_credentials) ||
@@ -273,7 +306,7 @@ esp_err_t wifi_manager_connect(const char *ssid, const char *password) {
   wifi_mode_t mode;
   esp_wifi_get_mode(&mode);
 
-  // 如果之前不是STA模式或者APSTA模式，停止后重启
+  // 如果之前不是 STA/APSTA，说明 WiFi 模式不适合直接连接，需要切回 STA。
   if (mode != WIFI_MODE_STA && mode != WIFI_MODE_APSTA) {
     ESP_ERROR_CHECK(esp_wifi_stop()); // 停止 WiFi
     ESP_ERROR_CHECK(
@@ -315,7 +348,7 @@ esp_err_t wifi_manager_start_ap(const char *ssid, const char *password) {
   esp_wifi_get_mode(&mode);
 
   if (mode == WIFI_MODE_STA) {
-    // 如果当前是STA模式，则切换到AP+STA模式
+    // 配网阶段使用 APSTA：AP 给手机连，STA 后续连接目标路由器。
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_APSTA));
   } else if (mode == WIFI_MODE_NULL) {
     // 如果未配置，直接使用AP模式
@@ -329,13 +362,23 @@ esp_err_t wifi_manager_start_ap(const char *ssid, const char *password) {
     wifi_state_cb(WIFI_STATE_AP_STARTED);
   }
 
-  ESP_LOGI(TAG, "AP Started. SSID:%s password:%s", ssid, password);
+  ESP_LOGI(TAG, "AP 配网已启动，SSID:%s", ssid);
   return ESP_OK;
 }
 
 // ======================= AP 配网部分 =======================
 static httpd_handle_t server = NULL;
 
+/*
+ * 配置 AP 侧 DHCP 参数。
+ * 手机连接 ESP32_Config 后，会从 ESP32 的 DHCP server 获取：
+ * - 手机自己的 IP
+ * - 网关地址 192.168.4.1
+ * - DNS 地址 192.168.4.1
+ *
+ * 这样手机访问联网检测地址时，会先把 DNS 查询发给 ESP32，
+ * ESP32 再把它引导到本机 HTTP 配网页。
+ */
 static void configure_captive_portal_dhcp(void) {
   if (ap_netif == NULL) {
     return;
@@ -348,6 +391,7 @@ static void configure_captive_portal_dhcp(void) {
 
   esp_netif_dhcps_stop(ap_netif);
 
+  // 把 AP 自己的地址作为 DNS server 下发给手机。
   esp_netif_dns_info_t dns_info = {
       .ip =
           {
@@ -357,6 +401,7 @@ static void configure_captive_portal_dhcp(void) {
   };
   esp_netif_set_dns_info(ap_netif, ESP_NETIF_DNS_MAIN, &dns_info);
 
+  // DHCP option 6：告诉客户端 DNS server 是 ESP32。
   uint8_t offer_dns = 1;
   esp_err_t err = esp_netif_dhcps_option(
       ap_netif, ESP_NETIF_OP_SET, ESP_NETIF_DOMAIN_NAME_SERVER,
@@ -366,6 +411,7 @@ static void configure_captive_portal_dhcp(void) {
              esp_err_to_name(err));
   }
 
+  // DHCP option 114：告诉支持该选项的系统 captive portal 页面地址。
   const char *portal = captive_portal_url;
   err = esp_netif_dhcps_option(ap_netif, ESP_NETIF_OP_SET,
                                ESP_NETIF_CAPTIVEPORTAL_URI, (void *)portal,
@@ -382,6 +428,11 @@ static void configure_captive_portal_dhcp(void) {
   }
 }
 
+/*
+ * 构造一个最小 DNS 响应包。
+ * 无论手机查询哪个域名，都回答 192.168.4.1，
+ * 从而把浏览器或系统联网检测请求引回 ESP32 自己。
+ */
 static int dns_build_response(uint8_t *buf, int len) {
   if (len < 12 || (buf[2] & 0x80)) {
     return 0;
@@ -421,6 +472,11 @@ static int dns_build_response(uint8_t *buf, int len) {
   return query_end + sizeof(answer);
 }
 
+/*
+ * 简易 captive DNS server。
+ * 监听 UDP 53 端口，收到 DNS 查询后统一返回 192.168.4.1。
+ * 这是手机自动弹出配网页的关键环节之一。
+ */
 static void captive_dns_task(void *pvParameters) {
   int sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_IP);
   if (sock < 0) {
@@ -484,6 +540,7 @@ static void start_captive_dns_server(void) {
 
 static void stop_captive_dns_server(void) { dns_server_running = false; }
 
+// 把 ESP-IDF 扫描到的认证类型转换成网页上更容易理解的字符串。
 static const char *authmode_to_text(wifi_auth_mode_t authmode) {
   switch (authmode) {
   case WIFI_AUTH_OPEN:
@@ -507,6 +564,7 @@ static const char *authmode_to_text(wifi_auth_mode_t authmode) {
   }
 }
 
+// 输出 SSID 到 HTML 前需要转义，避免 SSID 中的特殊字符破坏页面结构。
 static void html_append_escaped(char *dst, size_t dst_size, const char *src) {
   size_t len = strlen(dst);
 
@@ -545,6 +603,7 @@ static void html_append_escaped(char *dst, size_t dst_size, const char *src) {
   }
 }
 
+// 安全地向动态 HTML 缓冲区追加格式化内容。
 static size_t html_append(char *dst, size_t dst_size, const char *fmt, ...) {
   size_t len = strlen(dst);
   if (len >= dst_size) {
@@ -558,6 +617,10 @@ static size_t html_append(char *dst, size_t dst_size, const char *fmt, ...) {
   return strlen(dst);
 }
 
+/*
+ * 扫描附近 2.4GHz WiFi。
+ * ESP32 只能连接 2.4GHz 网络，5GHz-only 路由器不会出现在结果中。
+ */
 static uint16_t scan_wifi_aps(wifi_ap_record_t *ap_records,
                               uint16_t max_records) {
   if (ap_records == NULL || max_records == 0) {
@@ -585,21 +648,30 @@ static uint16_t scan_wifi_aps(wifi_ap_record_t *ap_records,
     return 0;
   }
 
+  ESP_LOGI(TAG, "WiFi scan done, found %u AP(s)", ap_count);
   return ap_count;
 }
 
-static esp_err_t send_wifi_config_page(httpd_req_t *req) {
-  wifi_ap_record_t *ap_records =
-      calloc(WIFI_SCAN_MAX_AP, sizeof(wifi_ap_record_t));
+// 刷新网页要展示的 WiFi 列表缓存。配网 AP 启动前调用最稳定。
+static void refresh_wifi_scan_cache(void) {
+  memset(scanned_ap_records, 0, sizeof(scanned_ap_records));
+  scanned_ap_count = scan_wifi_aps(scanned_ap_records, WIFI_SCAN_MAX_AP);
+}
+
+/*
+ * 生成配网页 HTML。
+ * 页面包含：
+ * - ESP32 扫描到的 WiFi 下拉框
+ * - 手动 SSID 输入框
+ * - WiFi 密码输入框
+ */
+static esp_err_t __attribute__((unused)) send_wifi_config_page(httpd_req_t *req) {
   char *page = calloc(1, WIFI_SCAN_PAGE_BUF_SIZE);
-  if (ap_records == NULL || page == NULL) {
-    free(ap_records);
+  if (page == NULL) {
     free(page);
     httpd_resp_send_500(req);
     return ESP_ERR_NO_MEM;
   }
-
-  uint16_t ap_count = scan_wifi_aps(ap_records, WIFI_SCAN_MAX_AP);
 
   html_append(page, WIFI_SCAN_PAGE_BUF_SIZE,
               "<!DOCTYPE html><html><head><meta charset=\"UTF-8\">"
@@ -621,25 +693,29 @@ static esp_err_t send_wifi_config_page(httpd_req_t *req) {
               "<label for=\"ssid_select\">附近WiFi</label>"
               "<select id=\"ssid_select\" name=\"ssid_select\">");
 
-  if (ap_count == 0) {
+  if (scanned_ap_count == 0) {
     html_append(page, WIFI_SCAN_PAGE_BUF_SIZE,
                 "<option value=\"\">未扫描到WiFi</option>");
   } else {
-    for (uint16_t i = 0; i < ap_count; i++) {
+    for (uint16_t i = 0; i < scanned_ap_count; i++) {
       char ssid[WIFI_SSID_MAX_LEN + 1] = {0};
-      snprintf(ssid, sizeof(ssid), "%s", (char *)ap_records[i].ssid);
+      snprintf(ssid, sizeof(ssid), "%s", (char *)scanned_ap_records[i].ssid);
+      if (strlen(ssid) == 0) {
+        continue;
+      }
 
       html_append(page, WIFI_SCAN_PAGE_BUF_SIZE, "<option value=\"");
       html_append_escaped(page, WIFI_SCAN_PAGE_BUF_SIZE, ssid);
       html_append(page, WIFI_SCAN_PAGE_BUF_SIZE, "\">");
       html_append_escaped(page, WIFI_SCAN_PAGE_BUF_SIZE, ssid);
       html_append(page, WIFI_SCAN_PAGE_BUF_SIZE, " (%ddBm %s)</option>",
-                  ap_records[i].rssi, authmode_to_text(ap_records[i].authmode));
+                  scanned_ap_records[i].rssi,
+                  authmode_to_text(scanned_ap_records[i].authmode));
     }
   }
 
   html_append(page, WIFI_SCAN_PAGE_BUF_SIZE,
-              "</select><div class=\"hint\">列表由ESP32扫描生成。若目标WiFi未出现，"
+              "</select><div class=\"hint\">列表由ESP32启动配网时扫描生成。若目标WiFi未出现，"
               "可在下面手动输入。</div>"
               "<label for=\"ssid\">手动SSID</label>"
               "<input id=\"ssid\" type=\"text\" name=\"ssid\" maxlength=\"32\" "
@@ -648,28 +724,117 @@ static esp_err_t send_wifi_config_page(httpd_req_t *req) {
               "<input id=\"password\" type=\"password\" name=\"password\" "
               "maxlength=\"64\" placeholder=\"开放网络可留空\">"
               "<button type=\"submit\">连接</button>"
-              "</form><div class=\"hint\">刷新页面可重新扫描附近WiFi。</div>"
+              "</form><div class=\"hint\">ESP32 只能连接 2.4GHz WiFi，"
+              "如果没有目标网络，请确认路由器开启 2.4GHz 或重启设备重新扫描。</div>"
               "</div></body></html>");
 
   httpd_resp_set_type(req, "text/html; charset=utf-8");
   httpd_resp_set_hdr(req, "Cache-Control", "no-store");
   httpd_resp_send(req, page, HTTPD_RESP_USE_STRLEN);
-  free(ap_records);
+  free(page);
+  return ESP_OK;
+}
+
+static esp_err_t send_wifi_config_page_modern(httpd_req_t *req) {
+  char *page = calloc(1, WIFI_SCAN_PAGE_BUF_SIZE);
+  if (page == NULL) {
+    httpd_resp_send_500(req);
+    return ESP_ERR_NO_MEM;
+  }
+
+  html_append(page, WIFI_SCAN_PAGE_BUF_SIZE,
+              "<!DOCTYPE html><html><head><meta charset=\"UTF-8\">"
+              "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
+              "<title>WiFi配网</title>"
+              "<style>"
+              ":root{--bg-a:#f4f7ff;--bg-b:#eef4ff;--bg-c:#f8fbff;"
+              "--card:#ffffff;--text:#14213d;--muted:#5c6b88;"
+              "--line:#d8e1f0;--accent:#2160ff;--accent-strong:#1747c9;}"
+              "*{box-sizing:border-box;}"
+              "body{margin:0;min-height:100vh;padding:24px 16px;"
+              "font-family:Arial,\"Microsoft YaHei\",sans-serif;"
+              "background:linear-gradient(180deg,var(--bg-a) 0%%,var(--bg-b) 48%%,var(--bg-c) 100%%);"
+              "color:var(--text);}"
+              ".wrap{max-width:520px;margin:0 auto;}"
+              ".card{background:var(--card);border:1px solid rgba(216,225,240,.9);"
+              "border-radius:20px;padding:24px 18px 18px;"
+              "box-shadow:0 18px 40px rgba(24,52,99,.10);}"
+              ".eyebrow{display:inline-block;padding:6px 10px;border-radius:999px;"
+              "background:#e7eeff;color:var(--accent);font-size:12px;font-weight:700;"
+              "letter-spacing:.04em;}"
+              "h2{margin:14px 0 10px;font-size:28px;line-height:1.2;}"
+              ".intro{margin:0 0 18px;font-size:14px;color:var(--muted);line-height:1.6;}"
+              ".field{margin-top:14px;}"
+              "label{display:block;margin:0 0 8px;font-size:14px;font-weight:700;}"
+              "select,input{width:100%%;padding:13px 12px;border:1px solid var(--line);"
+              "border-radius:14px;background:#fbfcff;color:var(--text);font-size:16px;outline:none;}"
+              "select:focus,input:focus{border-color:var(--accent);"
+              "box-shadow:0 0 0 4px rgba(33,96,255,.12);}"
+              ".hint{margin:8px 0 0;font-size:12px;color:var(--muted);line-height:1.6;}"
+              "button{width:100%%;margin-top:18px;padding:14px 16px;border:0;border-radius:14px;"
+              "background:linear-gradient(135deg,var(--accent) 0%%,var(--accent-strong) 100%%);"
+              "color:#fff;font-size:16px;font-weight:700;letter-spacing:.02em;}"
+              ".footnote{margin:16px 0 0;padding-top:14px;border-top:1px solid #edf1f7;"
+              "font-size:12px;color:#7a879d;line-height:1.6;}"
+              "</style></head><body><div class=\"wrap\"><div class=\"card\">"
+              "<span class=\"eyebrow\">AP 配网</span>"
+              "<h2>连接你的 WiFi</h2>"
+              "<p class=\"intro\">选择附近的 2.4GHz WiFi，或手动输入网络名称，然后填写密码完成配网。</p>"
+              "<form action=\"/submit\" method=\"post\">"
+              "<div class=\"field\"><label for=\"ssid_select\">附近 WiFi</label>"
+              "<select id=\"ssid_select\" name=\"ssid_select\">");
+
+  if (scanned_ap_count == 0) {
+    html_append(page, WIFI_SCAN_PAGE_BUF_SIZE,
+                "<option value=\"\">未扫描到 WiFi</option>");
+  } else {
+    for (uint16_t i = 0; i < scanned_ap_count; i++) {
+      char ssid[WIFI_SSID_MAX_LEN + 1] = {0};
+      snprintf(ssid, sizeof(ssid), "%s", (char *)scanned_ap_records[i].ssid);
+      if (strlen(ssid) == 0) {
+        continue;
+      }
+
+      html_append(page, WIFI_SCAN_PAGE_BUF_SIZE, "<option value=\"");
+      html_append_escaped(page, WIFI_SCAN_PAGE_BUF_SIZE, ssid);
+      html_append(page, WIFI_SCAN_PAGE_BUF_SIZE, "\">");
+      html_append_escaped(page, WIFI_SCAN_PAGE_BUF_SIZE, ssid);
+      html_append(page, WIFI_SCAN_PAGE_BUF_SIZE, " (%ddBm %s)</option>",
+                  scanned_ap_records[i].rssi,
+                  authmode_to_text(scanned_ap_records[i].authmode));
+    }
+  }
+
+  html_append(page, WIFI_SCAN_PAGE_BUF_SIZE,
+              "</select><p class=\"hint\">这是设备启动配网前缓存的扫描结果。如果没看到目标网络，可以在下面手动输入。</p></div>"
+              "<div class=\"field\"><label for=\"ssid\">手动输入 SSID</label>"
+              "<input id=\"ssid\" type=\"text\" name=\"ssid\" maxlength=\"32\" "
+              "placeholder=\"可选，填写后优先使用这个名称\"></div>"
+              "<div class=\"field\"><label for=\"password\">WiFi 密码</label>"
+              "<input id=\"password\" type=\"password\" name=\"password\" "
+              "maxlength=\"64\" placeholder=\"开放网络可留空\"></div>"
+              "<button type=\"submit\">连接并保存</button>"
+              "</form><p class=\"footnote\">仅支持 2.4GHz WiFi。如果没有目标网络，请确认路由器已开启 2.4GHz，并让设备重新进入配网模式后再试。</p>"
+              "</div></div></body></html>");
+
+  httpd_resp_set_type(req, "text/html; charset=utf-8");
+  httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+  httpd_resp_send(req, page, HTTPD_RESP_USE_STRLEN);
   free(page);
   return ESP_OK;
 }
 
 /* GET / 响应主页 */
 static esp_err_t root_get_handler(httpd_req_t *req) {
-  return send_wifi_config_page(req);
+  return send_wifi_config_page_modern(req);
 }
 
-/* 手机系统会访问这些探测地址；返回配网页可触发 captive portal 弹窗。 */
+/* 手机系统会访问这些探测地址；返回配网页可触发 captive portal 自动弹窗。 */
 static esp_err_t captive_probe_get_handler(httpd_req_t *req) {
   return root_get_handler(req);
 }
 
-/* 提取表单数据的辅助函数 */
+/* URL 解码：把表单中的 %XX 和 + 还原成真实 SSID/密码字符。 */
 static void url_decode(char *dst, const char *src) {
   char a, b;
   while (*src) {
@@ -699,6 +864,7 @@ static void url_decode(char *dst, const char *src) {
   *dst++ = '\0';
 }
 
+// 复制表单字段值并保证字符串结尾，避免字段过长导致越界。
 static void form_value_copy(char *dst, size_t dst_size, const char *src,
                             size_t src_len) {
   if (dst_size == 0) {
@@ -714,6 +880,7 @@ static void form_value_copy(char *dst, size_t dst_size, const char *src,
   dst[copy_len] = '\0';
 }
 
+// 从 application/x-www-form-urlencoded 表单中取出指定字段。
 static void form_get_value(char *dst, size_t dst_size, const char *form,
                            const char *name) {
   char pattern[32] = {0};
@@ -733,7 +900,10 @@ static void form_get_value(char *dst, size_t dst_size, const char *form,
   }
 }
 
-/* POST /submit 处理提交的WiFi信息 */
+/*
+ * POST /submit 处理手机提交的 WiFi 信息。
+ * 手动 SSID 优先；如果手动 SSID 为空，则使用下拉框选择的 ssid_select。
+ */
 static esp_err_t submit_post_handler(httpd_req_t *req) {
   char buf[WIFI_FORM_BUF_SIZE];
   int received = 0;
@@ -748,6 +918,7 @@ static esp_err_t submit_post_handler(httpd_req_t *req) {
     return ESP_FAIL;
   }
 
+  // HTTP body 可能分多次到达，因此循环读取直到完整接收。
   while (remaining > 0) {
     int ret = httpd_req_recv(req, buf + received, remaining);
     if (ret <= 0) {
@@ -761,7 +932,7 @@ static esp_err_t submit_post_handler(httpd_req_t *req) {
   }
   buf[received] = '\0';
 
-  ESP_LOGI(TAG, "Received form data: %s", buf);
+  ESP_LOGD(TAG, "Received form data: %s", buf);
 
   char ssid_select_raw[WIFI_URL_ENCODED_SSID_BUF_SIZE] = {0};
   char ssid_raw[WIFI_URL_ENCODED_SSID_BUF_SIZE] = {0};
@@ -778,6 +949,7 @@ static esp_err_t submit_post_handler(httpd_req_t *req) {
   url_decode(ssid, ssid_raw);
   url_decode(password, password_raw);
 
+  // 用户没有手动输入时，使用扫描列表里选中的 SSID。
   if (strlen(ssid) == 0 && strlen(ssid_select) > 0) {
     snprintf(ssid, sizeof(ssid), "%s", ssid_select);
   }
@@ -787,11 +959,30 @@ static esp_err_t submit_post_handler(httpd_req_t *req) {
     return ESP_FAIL;
   }
 
-  ESP_LOGI(TAG, "Parsed SSID: %s, Password: %s", ssid, password);
+  ESP_LOGI(TAG, "收到配网信息，目标 SSID:%s", ssid);
 
   const char *resp_str =
-      "WiFi信息已收到，设备正在连接...请留意设备指示灯或重启设备。";
-  httpd_resp_set_type(req, "text/plain; charset=utf-8");
+      "<!DOCTYPE html><html><head><meta charset=\"UTF-8\">"
+      "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
+      "<title>正在连接WiFi</title>"
+      "<style>"
+      "body{margin:0;min-height:100vh;display:flex;align-items:flex-start;"
+      "justify-content:center;background:#f6f7f9;color:#1f2933;"
+      "font-family:Arial,\"Microsoft YaHei\",sans-serif;}"
+      ".panel{width:calc(100% - 40px);max-width:480px;margin-top:72px;"
+      "background:#fff;border-radius:8px;padding:28px 22px;"
+      "box-shadow:0 8px 24px rgba(15,23,42,.12);text-align:center;}"
+      ".mark{width:56px;height:56px;border-radius:50%;margin:0 auto 18px;"
+      "background:#1677ff;color:#fff;display:flex;align-items:center;"
+      "justify-content:center;font-size:34px;font-weight:700;}"
+      "h2{margin:0 0 12px;font-size:26px;font-weight:700;}"
+      "p{margin:0;color:#52606d;font-size:18px;line-height:1.7;}"
+      "</style></head><body><div class=\"panel\">"
+      "<div class=\"mark\">✓</div>"
+      "<h2>WiFi信息已收到</h2>"
+      "<p>设备正在连接路由器，请留意设备指示灯。连接成功后，ESP32会自动关闭配网热点。</p>"
+      "</div></body></html>";
+  httpd_resp_set_type(req, "text/html; charset=utf-8");
   httpd_resp_send(req, resp_str, HTTPD_RESP_USE_STRLEN);
 
   // 延迟一小段时间后尝试连接（让HTTP响应先发送出去）
@@ -852,16 +1043,23 @@ static const httpd_uri_t portal_uri = {.uri = "/*",
                                        .handler = root_get_handler,
                                        .user_ctx = NULL};
 
-/* 启动配网 Web 服务器 */
+/*
+ * 启动配网 Web 服务器。
+ * 这里注册了不同手机系统常用的联网检测 URL：
+ * Android: /generate_204, /gen_204
+ * iOS: /hotspot-detect.html, /library/test/success.html
+ * Windows: /connecttest.txt, /ncsi.txt
+ * 返回内容不是系统预期值时，手机通常会自动弹出登录/配网页。
+ */
 static httpd_handle_t start_webserver(void) {
   httpd_config_t config = HTTPD_DEFAULT_CONFIG();
   config.uri_match_fn = httpd_uri_match_wildcard;
   config.max_uri_handlers = 12;
   httpd_handle_t server = NULL;
 
-  ESP_LOGI(TAG, "Starting web server on port: '%d'", config.server_port);
+  ESP_LOGD(TAG, "Starting web server on port: '%d'", config.server_port);
   if (httpd_start(&server, &config) == ESP_OK) {
-    ESP_LOGI(TAG, "Registering URI handlers");
+    ESP_LOGD(TAG, "Registering URI handlers");
     httpd_register_uri_handler(server, &root_uri);
     httpd_register_uri_handler(server, &submit_uri);
     httpd_register_uri_handler(server, &android_probe_uri);
@@ -874,10 +1072,11 @@ static httpd_handle_t start_webserver(void) {
     return server;
   }
 
-  ESP_LOGI(TAG, "Error starting server!");
+  ESP_LOGE(TAG, "Error starting server!");
   return NULL;
 }
 
+// 停止 HTTP server。配网成功后必须关闭，避免 AP 已关但 server 句柄残留。
 static void stop_webserver(void) {
   if (server != NULL) {
     httpd_stop(server);
@@ -885,6 +1084,10 @@ static void stop_webserver(void) {
   }
 }
 
+/*
+ * WiFi 连接成功后的 AP 配网收尾任务。
+ * 不直接在事件回调里 stop server / 切模式，是为了避免阻塞默认事件循环。
+ */
 static void wifi_connected_cleanup_task(void *pvParameters) {
   vTaskDelay(pdMS_TO_TICKS(1500));
 
@@ -900,15 +1103,19 @@ static void wifi_connected_cleanup_task(void *pvParameters) {
 
   is_ap_active = false;
   wifi_cleanup_task_handle = NULL;
-  ESP_LOGI(TAG, "STA connected, AP provisioning stopped");
+  ESP_LOGI(TAG, "WiFi 已连接，AP 配网已关闭");
   vTaskDelete(NULL);
 }
 
 /** 开启 AP 配网服务
- *  开启热点，并启动一个网页服务器供手机填写 WiFi 密码
+ *  开启热点，并启动 DNS + HTTP 配网服务供手机填写 WiFi 密码
  */
 esp_err_t wifi_manager_start_ap_provisioning(const char *ap_ssid,
                                              const char *ap_password) {
+  // 先在 STA 模式下扫描一次附近 2.4GHz WiFi，再开启 AP。
+  // 手机连上 ESP32 AP 后再扫描会切换信道，容易导致网页超时或扫描结果为空。
+  refresh_wifi_scan_cache();
+
   // 1. 先开启AP热点
   esp_err_t err = wifi_manager_start_ap(ap_ssid, ap_password);
   if (err != ESP_OK) {

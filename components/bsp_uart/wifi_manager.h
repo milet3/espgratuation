@@ -26,6 +26,7 @@ typedef void (*p_wifi_state_callback)(wifi_state_t state);
 void wifi_manager_init(void);
 
 esp_err_t wifi_manager_connect(const char* ssid, const char* password);
+void wifi_manager_cancel_connect_retry(void);
 bool wifi_manager_load_saved_config(wifi_credentials_t* credentials);
 
 // AP配网相关函数

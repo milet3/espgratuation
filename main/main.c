@@ -31,6 +31,9 @@ OTA_ZC_Stats g_ota_zc_stats = {0};
 char DeviceNameBuff[SUN_NUMBER + 1][64] = {"GW001", "D001", "D002", "D003"};
 char ProductIdBuff[SUN_NUMBER + 1][64] = {GW_PRODUCTID, SUB_PRODUCTID,
                                           SUB_PRODUCTID, SUB_PRODUCTID};
+static TaskHandle_t mqtt_start_task_handle = NULL;
+static bool boot_saved_wifi_pending = false;
+static bool boot_saved_wifi_ap_started = false;
 
 // 统一传感器数据上传任务
 void unified_sensor_upload_task(void *pvParameters);
@@ -39,23 +42,73 @@ void start_OTAWriteTask(void *pvParameters);
 // LoRa 轮询任务
 void lora_poll_task(void *pvParameters);
 
+static void app_configure_log_levels(void) {
+  esp_log_level_set("*", ESP_LOG_WARN);
+
+  esp_log_level_set("FIRMWARE", ESP_LOG_INFO);
+  esp_log_level_set("MAIN", ESP_LOG_INFO);
+  esp_log_level_set("WIFI_MANAGER", ESP_LOG_INFO);
+  esp_log_level_set("ESP_MQTT", ESP_LOG_INFO);
+  esp_log_level_set("UPLOAD", ESP_LOG_INFO);
+  esp_log_level_set("LORA_APP", ESP_LOG_WARN);
+  esp_log_level_set("LORA_TASK", ESP_LOG_WARN);
+  esp_log_level_set("WIFI_CAT1", ESP_LOG_WARN);
+  esp_log_level_set("OTA", ESP_LOG_INFO);
+
+  esp_log_level_set("wifi", ESP_LOG_WARN);
+  esp_log_level_set("esp_netif_handlers", ESP_LOG_WARN);
+  esp_log_level_set("esp_netif_lwip", ESP_LOG_WARN);
+  esp_log_level_set("phy_init", ESP_LOG_WARN);
+  esp_log_level_set("pp", ESP_LOG_WARN);
+  esp_log_level_set("net80211", ESP_LOG_WARN);
+  esp_log_level_set("mqtt_client", ESP_LOG_WARN);
+  esp_log_level_set("transport_tcp", ESP_LOG_WARN);
+  esp_log_level_set("transport", ESP_LOG_WARN);
+  esp_log_level_set("outbox", ESP_LOG_WARN);
+  esp_log_level_set("esp-tls", ESP_LOG_WARN);
+  esp_log_level_set("mqtt_common", ESP_LOG_WARN);
+}
+
+static void mqtt_start_task(void *pvParameters) {
+  vTaskDelay(pdMS_TO_TICKS(1000));
+  ESP_LOGI("MAIN", "WiFi 已就绪，正在启动 MQTT...");
+  esp_mqtt_app_start(NULL);
+  mqtt_start_task_handle = NULL;
+  vTaskDelete(NULL);
+}
+
+static void start_boot_saved_wifi_ap_fallback(void) {
+  if (!boot_saved_wifi_pending || boot_saved_wifi_ap_started) {
+    return;
+  }
+
+  boot_saved_wifi_pending = false;
+  boot_saved_wifi_ap_started = true;
+
+  ESP_LOGW("MAIN", "历史 WiFi 连接失败，立即启动 AP 配网：ESP32_Config");
+  wifi_manager_cancel_connect_retry();
+  esp_err_t err =
+      wifi_manager_start_ap_provisioning("ESP32_Config", "12345678");
+  if (err != ESP_OK) {
+    ESP_LOGE("MAIN", "启动 AP 配网失败: %s", esp_err_to_name(err));
+  }
+}
+
 /**
  * @brief CAT1 延迟启动管理任务
  * 逻辑：启动后先关闭 CAT1，等待 2 分钟，若 WiFi 未连接则启动 CAT1
  */
 void cat1_delayed_start_task(void *pvParameters) {
-  ESP_LOGI("MAIN", "CAT1 延迟启动管理任务已启动，进入 2 分钟观察期...");
+  ESP_LOGI("MAIN", "CAT1 备用链路观察中，120 秒后检查 WiFi 状态");
 
   // 等待 120 秒
   vTaskDelay(pdMS_TO_TICKS(120000));
 
   // 检查是否已经通过 WiFi 连接成功
   if (SysCB.SysEventFlag & CONNECT_WIFI) {
-    ESP_LOGI("MAIN",
-             "★★★ WiFi 已连接成功，CAT1 模块将保持关闭状态以节省功耗 ★★★");
+    ESP_LOGI("MAIN", "WiFi 已连接，CAT1 保持关闭");
   } else {
-    ESP_LOGW("MAIN",
-             "！！！ WiFi 配网超时或未连接，正在激活 4G CAT1 备用链路 ！！！");
+    ESP_LOGW("MAIN", "WiFi 未连接，启用 CAT1 备用链路");
 
     // 1. 初始化 4G Cat1 模块串口
     if (Cat1_AT_Init() == ESP_OK) {
@@ -93,29 +146,29 @@ void unified_sensor_upload_task(void *pvParameters) {
       float air_temp = 25.5f;
       float air_hum = 60.0f;
       float air_lux = 150.0f;
-      ESP_LOGI("UPLOAD", "Round 1: Uploading Gateway Air Data...");
+      ESP_LOGI("UPLOAD", "上报网关空气数据");
       WiFi_Cat1_GatewayDataPost(air_temp, air_hum, air_lux);
       vTaskDelay(pdMS_TO_TICKS(2000)); // 轮次间隔延时
 
       // 第二轮：上报网关土壤数据
       if (soil_sensor_read_data(&soil_data) == ESP_OK) {
-        ESP_LOGI("UPLOAD", "Round 2: Uploading Gateway Soil Data...");
+        ESP_LOGI("UPLOAD", "上报网关土壤数据");
         WiFi_Cat1_SoilDataPost(soil_data.temperature, soil_data.humidity,
                                soil_data.ec, soil_data.nitrogen,
                                soil_data.phosphorus, soil_data.potassium);
       } else {
-        ESP_LOGW("UPLOAD", "Round 2: Skip Soil Data (Read Failed)");
+        ESP_LOGW("UPLOAD", "跳过土壤数据：读取失败");
       }
       vTaskDelay(pdMS_TO_TICKS(2000)); // 轮次间隔延时
 
       // 第三轮：上报子节点数据 (从缓存读取)
       if (SysCB.last_node_data.lightlux > 0) { // 简单判断是否有有效缓存
-        ESP_LOGI("UPLOAD", "Round 3: Uploading Sub-Node Data (Proxy)...");
+        ESP_LOGI("UPLOAD", "上报子节点数据");
         WiFi_Cat1_NodeDataPost(SysCB.last_node_data.temperature,
                                SysCB.last_node_data.humidity,
                                SysCB.last_node_data.lightlux);
       } else {
-        ESP_LOGW("UPLOAD", "Round 3: Skip Node Data (No Cache)");
+        ESP_LOGW("UPLOAD", "跳过子节点数据：暂无缓存");
       }
 
       if (!version_reported) {
@@ -132,7 +185,7 @@ void unified_sensor_upload_task(void *pvParameters) {
 
 // LoRa 轮询任务：定期检查子节点状态并触发读取
 void lora_poll_task(void *pvParameters) {
-  ESP_LOGI("LORA_TASK", "LoRa Poll Task Started");
+  ESP_LOGI("LORA_TASK", "LoRa 轮询任务已启动");
   static uint32_t last_test_send = 0;
   static uint32_t last_query_send = 0;
 
@@ -176,15 +229,21 @@ extern Sys_CB SysCB;
  */
 void wifi_state_callback(wifi_state_t state) {
   if (state == WIFI_STATE_CONNECTED) {
-    ESP_LOGI("MAIN", "WiFi 已就绪，正在启动 MQTT...");
-    esp_mqtt_app_start(NULL);
+    boot_saved_wifi_pending = false;
+    if (mqtt_start_task_handle == NULL) {
+      xTaskCreate(mqtt_start_task, "mqtt_start", 4096, NULL, 5,
+                  &mqtt_start_task_handle);
+    }
   } else if (state == WIFI_STATE_DISCONNECTED) {
     ESP_LOGW("MAIN", "WiFi 已断开，MQTT 将自动尝试重连或由监控任务处理");
+    start_boot_saved_wifi_ap_fallback();
   }
 }
 
 void app_main(void) {
-  ESP_LOGE("FIRMWARE", "!!!!!!!! 当前固件版本号: V99.99 !!!!!!!! ");
+  app_configure_log_levels();
+
+  ESP_LOGI("FIRMWARE", "固件版本: V99.99");
 
   // 1. 初始化 NVS (WiFi 驱动必须)
   esp_err_t ret = nvs_flash_init();
@@ -220,7 +279,7 @@ void app_main(void) {
   // 【核心修改】初始化 CAT1 GPIO 并强制拉低（关闭模块）
   WiFi_Cat1_InitGPIO();
   CAT1_POWER(0);
-  ESP_LOGI("MAIN", "已预先关闭 4G CAT1 模块，优先等待 WiFi 配网...");
+  ESP_LOGI("MAIN", "启动：优先使用 WiFi，CAT1 已关闭");
 
   // 2. 调用硬件初始化代码
   bsp_led_init();
@@ -232,14 +291,16 @@ void app_main(void) {
   wifi_set_state_callback(wifi_state_callback); // 注册状态回调
 
   wifi_credentials_t saved_wifi = {0};
-  ESP_LOGI("MAIN", "正在读取历史 WiFi 配置...");
+  ESP_LOGI("MAIN", "读取历史 WiFi 配置");
   if (wifi_manager_load_saved_config(&saved_wifi)) {
-    ESP_LOGI("MAIN", "读取到历史 WiFi 配置，SSID: %s，跳过 AP 配网",
-             saved_wifi.ssid);
+    ESP_LOGI("MAIN", "使用历史 WiFi：%s", saved_wifi.ssid);
+    boot_saved_wifi_pending = true;
+    boot_saved_wifi_ap_started = false;
     wifi_manager_connect(saved_wifi.ssid, saved_wifi.password);
   } else {
-    ESP_LOGI("MAIN",
-             "未读取到历史 WiFi 配置，启动 AP 配网: SSID=ESP32_Config");
+    boot_saved_wifi_pending = false;
+    boot_saved_wifi_ap_started = true;
+    ESP_LOGI("MAIN", "未保存 WiFi，启动 AP 配网：ESP32_Config");
     wifi_manager_start_ap_provisioning("ESP32_Config", "12345678");
   }
 
@@ -274,7 +335,7 @@ void app_main(void) {
   }
   // 启动 OTA 写入任务 (负责将下载的固件写入 Flash 分区)
   xTaskCreate(start_OTAWriteTask, "ota_write_task", 4096, NULL, 5, NULL);
-  ESP_LOGI("MAIN", "OTA 升级任务已启动");
+  ESP_LOGI("MAIN", "OTA 任务已启动");
 
   // 传感器数据本地查看
   /*
