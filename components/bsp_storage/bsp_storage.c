@@ -28,7 +28,7 @@ esp_err_t EEprom_Init(void)
         err = nvs_flash_init();
     }
     ESP_ERROR_CHECK(err);
-    ESP_LOGI(TAG, "NVS initialized successfully");
+    ESP_LOGD(TAG, "NVS 初始化完成");
     return err;
 }
 
@@ -47,7 +47,7 @@ void EEprom_ReadData(const char* key, void *data, size_t len)
     // 打开
     err = nvs_open(NVS_NAMESPACE, NVS_READONLY, &my_handle);
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Error (%s) opening NVS handle!", esp_err_to_name(err));
+        ESP_LOGE(TAG, "打开 NVS 句柄失败: %s", esp_err_to_name(err));
         return;
     }
     
@@ -55,12 +55,12 @@ void EEprom_ReadData(const char* key, void *data, size_t len)
     size_t required_size = len;
     err = nvs_get_blob(my_handle, key, data, &required_size);
     if (err != ESP_OK && err != ESP_ERR_NVS_NOT_FOUND) {
-        ESP_LOGE(TAG, "Error (%s) reading from NVS!", esp_err_to_name(err));
+        ESP_LOGE(TAG, "从 NVS 读取数据失败: %s", esp_err_to_name(err));
     } else if (err == ESP_ERR_NVS_NOT_FOUND) {
-        ESP_LOGW(TAG, "The value is not initialized yet!");
+        ESP_LOGD(TAG, "键 '%s' 尚未初始化，使用默认值", key);
         memset(data, 0, len); // 如果没有找到，清空缓冲区
     } else {
-        ESP_LOGI(TAG, "Read data from NVS successfully");
+        ESP_LOGD(TAG, "已从 NVS 读取键 '%s'", key);
     }
 
     // 关闭
@@ -82,22 +82,22 @@ void EEprom_WriteData(const char* key, void *data, size_t len)
     // 打开
     err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &my_handle);
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Error (%s) opening NVS handle!", esp_err_to_name(err));
+        ESP_LOGE(TAG, "打开 NVS 句柄失败: %s", esp_err_to_name(err));
         return;
     }
 
     // 写入
     err = nvs_set_blob(my_handle, key, data, len);
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to write data to NVS!");
+        ESP_LOGE(TAG, "写入 NVS 数据失败");
     } else {
-        ESP_LOGI(TAG, "Write data to NVS successfully");
+        ESP_LOGD(TAG, "已写入 NVS 键 '%s'", key);
     }
 
     // 提交写入的值
     err = nvs_commit(my_handle);
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to commit updates in NVS!");
+        ESP_LOGE(TAG, "提交 NVS 更新失败");
     }
 
     // 关闭

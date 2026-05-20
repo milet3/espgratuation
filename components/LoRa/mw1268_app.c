@@ -67,7 +67,6 @@ void LoRa_Init(void) {
            "Starting LoRa MW1268 Initialization (User Factory Reset Logic)...");
 
   // 1. 临时降低全局日志等级
-  esp_log_level_set("*", ESP_LOG_WARN);
 
   lora_gpio_init();
 
@@ -82,9 +81,7 @@ void LoRa_Init(void) {
     uart_driver_delete(LORA_UART_PORT);
     lora_uart_init(9600);
     if (lora_send_cmd("AT", "OK", 50) != 0) {
-      ESP_LOGE(TAG, "LoRa Communication Error: Failed to established "
-                    "connection at 115200 or 9600!");
-      esp_log_level_set("*", ESP_LOG_INFO);
+      ESP_LOGE(TAG, "LoRa 通信异常：在 115200 和 9600 波特率下都无法建立连接");
       return;
     }
   }
@@ -106,7 +103,6 @@ void LoRa_Init(void) {
   // while(gpio_get_level(LORA_AUX_PIN));
 
   // 恢复日志输出
-  esp_log_level_set("*", ESP_LOG_INFO);
 
   lora_device_sta = LORA_RX_STA;
   ESP_LOGI(TAG, "LoRa MW1268 Ready (User Defaults: 115200, ADDR:0, CH:23)");

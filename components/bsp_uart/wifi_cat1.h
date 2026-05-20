@@ -87,6 +87,7 @@ void WiFi_Cat1_AllDataPost(float air_temp, float air_hum, float air_lux,
  */
 void WiFi_Cat1_SubPropertyGet(char sub_num);
 void WiFi_Cat1_ReportVersion(const char *id); // 函数说明，上报当前版本号
+const char *WiFi_Cat1_GetRuntimeFirmwareVersion(void);
 void WiFi_Cat1_StartOTA(const char *url, const char *token,
                         uint8_t ota_staflag); // 函数说明，开始OTA下载
 void Studio_OTA_CheckTask(void); // 函数说明，新版 Studio OTA 检查

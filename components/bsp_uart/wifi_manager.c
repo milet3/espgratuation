@@ -174,6 +174,23 @@ static void event_handler(void *arg, esp_event_base_t event_base,
     {
       ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
       ESP_LOGI(TAG, "已获取IP: " IPSTR, IP2STR(&event->ip_info.ip));
+      if (sta_netif != NULL) {
+        esp_netif_set_default_netif(sta_netif);
+
+        esp_netif_dns_info_t dns_info;
+        if (esp_netif_get_dns_info(sta_netif, ESP_NETIF_DNS_MAIN, &dns_info) ==
+                ESP_OK &&
+            dns_info.ip.type == ESP_IPADDR_TYPE_V4) {
+          ESP_LOGI(TAG, "STA DNS main: " IPSTR,
+                   IP2STR(&dns_info.ip.u_addr.ip4));
+        }
+        if (esp_netif_get_dns_info(sta_netif, ESP_NETIF_DNS_BACKUP,
+                                   &dns_info) == ESP_OK &&
+            dns_info.ip.type == ESP_IPADDR_TYPE_V4) {
+          ESP_LOGI(TAG, "STA DNS backup: " IPSTR,
+                   IP2STR(&dns_info.ip.u_addr.ip4));
+        }
+      }
       sta_connect_count = 0;
       is_sta_connected = true;            // 标记为已连接
       SysCB.SysEventFlag |= CONNECT_WIFI; // 置位连接WiFi成功事件
@@ -184,14 +201,10 @@ static void event_handler(void *arg, esp_event_base_t event_base,
 
       // 安全地处理硬件操作：不阻塞事件任务
       // 修正：只有当 CAT1 已经上电时才尝试关机，并且增加引脚有效性检查
-<<<<<<< HEAD
       if (is_ap_active && wifi_cleanup_task_handle == NULL) {
         xTaskCreate(wifi_connected_cleanup_task, "wifi_cleanup", 3072, NULL, 5,
                     &wifi_cleanup_task_handle);
       }
-
-=======
->>>>>>> 3e70c77ee4c2f18d61b4633f3189556fcc6b895d
       if (CAT1_POWER_STATE_PIN >= 0) {
         xTaskCreate(cat1_shutdown_task, "cat1_off", 2048, NULL, 5, NULL);
       }
@@ -244,6 +257,9 @@ void wifi_manager_init(void) {
 
   sta_netif = esp_netif_create_default_wifi_sta(); // 创建默认的 WiFi STA 接口
   ap_netif = esp_netif_create_default_wifi_ap(); // 创建默认的 WiFi AP 接口
+  if (sta_netif != NULL) {
+    esp_netif_set_default_netif(sta_netif);
+  }
 
   wifi_init_config_t wifi_cfg = WIFI_INIT_CONFIG_DEFAULT(); // 初始化 WiFi 配置
   ESP_ERROR_CHECK(esp_wifi_init(&wifi_cfg));                // 初始化 WiFi

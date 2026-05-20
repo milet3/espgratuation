@@ -65,10 +65,10 @@
 #define OTA_PORT 80                       // OTA服务器端口
 
 #define UNIX "1861891199"          // token运算时的过期UNIX时间戳
-#define CURRENT_FW_VERSION "1.0.0" // 当前固件版本号 (用于 OTA 匹配)
+#define CURRENT_FW_VERSION "2.0.0" // 当前固件版本号 (用于 OTA 匹配)
 #define Accesskey "0b5b4ffaac3847ca9fc6bf1d71ac9b9e" // 用户Accesskey
 #define USERID "519184"                              // 用户ID
-#define GATEWAY_VERSION "1.0.0"                      // 网关固件版本号
+#define GATEWAY_VERSION "2.0.0"                      // 网关固件版本号
 
 #define GW_PRODUCTID "C9fKaO0V7f" // 网关产品ID
 #define GW_DEVICENAME "GW001"     // 网关设备名称
@@ -78,6 +78,49 @@
 #define SUB1_PDEVICENAME "D001"                  // 子设备1设备名称
 #define SUB2_PDEVICENAME "D002"                  // 子设备2设备名称
 #define SUB3_PDEVICENAME "D003"                  // 子设备3设备名称
+
+#ifndef PROJECT_VER
+#define PROJECT_VER "0.0.0"
+#endif
+
+#undef CURRENT_FW_VERSION
+#undef GATEWAY_VERSION
+
+// Keep legacy macro names, but drive them from PROJECT_VER only.
+#define CURRENT_FW_VERSION PROJECT_VER
+#define GATEWAY_VERSION PROJECT_VER
+
+#ifndef OTA_PRODUCT_ACCESSKEY
+#define OTA_PRODUCT_ACCESSKEY "iXsta1nJ53k7hy9hH3Ufw+U1S4db5fvf302dG9WTp+M"
+#endif
+
+#ifndef MQTT_PRODUCT_ACCESSKEY
+#define MQTT_PRODUCT_ACCESSKEY OTA_PRODUCT_ACCESSKEY
+#endif
+
+#ifndef OTA_NUMERIC_PID
+#define OTA_NUMERIC_PID ""
+#endif
+
+#ifndef OTA_DEVICE_AUTHINFO
+#define OTA_DEVICE_AUTHINFO GW_DEVICENAME
+#endif
+
+#ifndef OTA_SOUTH_MANUF
+#define OTA_SOUTH_MANUF "101"
+#endif
+
+#ifndef OTA_SOUTH_MODEL
+#define OTA_SOUTH_MODEL "10101"
+#endif
+
+#ifndef OTA_SOUTH_TYPE
+#define OTA_SOUTH_TYPE 2
+#endif
+
+#ifndef OTA_DEVICE_ID
+#define OTA_DEVICE_ID ""
+#endif
 
 #define ATTRIBUTE1                                                             \
   "PestAlarm" // 功能属性1标识符，标识符名称必须和服务器后台设置的完全一样，大小写也必须一样
