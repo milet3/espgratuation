@@ -184,11 +184,14 @@ static void event_handler(void *arg, esp_event_base_t event_base,
 
       // 安全地处理硬件操作：不阻塞事件任务
       // 修正：只有当 CAT1 已经上电时才尝试关机，并且增加引脚有效性检查
+<<<<<<< HEAD
       if (is_ap_active && wifi_cleanup_task_handle == NULL) {
         xTaskCreate(wifi_connected_cleanup_task, "wifi_cleanup", 3072, NULL, 5,
                     &wifi_cleanup_task_handle);
       }
 
+=======
+>>>>>>> 3e70c77ee4c2f18d61b4633f3189556fcc6b895d
       if (CAT1_POWER_STATE_PIN >= 0) {
         xTaskCreate(cat1_shutdown_task, "cat1_off", 2048, NULL, 5, NULL);
       }

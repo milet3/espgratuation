@@ -179,6 +179,16 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base,
     } else {
       ESP_LOGI(TAG, "等待 LoRa 确认后再报备子设备上线");
     }
+
+    // [逻辑调整] 仅在 LoRa 通信已确认的情况下才进行上线报备
+    if ((SysCB.SysEventFlag & SUB_LORA_CONFIRMED) &&
+        !(SysCB.SysEventFlag & SUB_ONLINE_READY)) {
+      ESP_LOGI(TAG, "LoRa 已预先确认，立即执行子设备上线报备");
+      WiFi_Cat1_SubOnline(1, 1);
+      SysCB.SysEventFlag |= SUB_ONLINE_READY;
+    } else {
+      ESP_LOGW(TAG, "LoRa 尚未确认或已在线，等待 LoRa 任务触发上线报备");
+    }
     break;
 
   case MQTT_EVENT_DISCONNECTED:
@@ -239,9 +249,15 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base,
       if (root) {
         cJSON *code = cJSON_GetObjectItem(root, "code");
         if (code && code->valueint == 200) {
+<<<<<<< HEAD
           ESP_LOGI(TAG, "子设备上线成功");
         } else {
           ESP_LOGE(TAG, "子设备上线失败，错误码: %d",
+=======
+          ESP_LOGW(TAG, ">>> [调试信息] 子设备上线成功！服务器已确认。");
+        } else {
+          ESP_LOGE(TAG, ">>> [调试信息] 子设备上线失败，错误码: %d",
+>>>>>>> 3e70c77ee4c2f18d61b4633f3189556fcc6b895d
                    code ? code->valueint : -1);
         }
         cJSON_Delete(root);
@@ -254,9 +270,15 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base,
       if (root) {
         cJSON *code = cJSON_GetObjectItem(root, "code");
         if (code && code->valueint == 200) {
+<<<<<<< HEAD
           ESP_LOGD(TAG, "子设备数据上报成功");
         } else {
           ESP_LOGE(TAG, "子设备数据上报失败，错误码: %d",
+=======
+          ESP_LOGW(TAG, ">>> [调试信息] 子设备数据上报成功！");
+        } else {
+          ESP_LOGE(TAG, ">>> [调试信息] 子设备数据上报失败，错误码: %d",
+>>>>>>> 3e70c77ee4c2f18d61b4633f3189556fcc6b895d
                    code ? code->valueint : -1);
         }
         cJSON_Delete(root);
@@ -272,11 +294,20 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base,
           cJSON *data = cJSON_GetObjectItem(root, "data");
           if (data) {
             char *data_str = cJSON_PrintUnformatted(data);
+<<<<<<< HEAD
             ESP_LOGD(TAG, "获取子设备最新属性: %s", data_str);
             free(data_str);
           }
         } else {
           ESP_LOGE(TAG, "获取子设备属性失败，错误码: %d",
+=======
+            ESP_LOGW(TAG, ">>> [调试信息] 成功获取子设备最新属性: %s",
+                     data_str);
+            free(data_str);
+          }
+        } else {
+          ESP_LOGE(TAG, ">>> [调试信息] 获取子设备属性失败，错误码: %d",
+>>>>>>> 3e70c77ee4c2f18d61b4633f3189556fcc6b895d
                    code ? code->valueint : -1);
         }
         cJSON_Delete(root);
@@ -289,10 +320,17 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base,
       if (root) {
         cJSON *code = cJSON_GetObjectItem(root, "code");
         if (code && code->valueint == 200) {
+<<<<<<< HEAD
           ESP_LOGD(TAG, "批量数据上报成功");
         } else {
           cJSON *msg = cJSON_GetObjectItem(root, "msg");
           ESP_LOGE(TAG, "批量数据上报失败, code: %d, msg: %s",
+=======
+          ESP_LOGW(TAG, ">>> [调试信息] 批量数据上报 (Pack/Post) 成功！");
+        } else {
+          cJSON *msg = cJSON_GetObjectItem(root, "msg");
+          ESP_LOGE(TAG, ">>> [调试信息] 批量数据上报失败, code: %d, msg: %s",
+>>>>>>> 3e70c77ee4c2f18d61b4633f3189556fcc6b895d
                    code ? code->valueint : -1,
                    (msg && msg->valuestring) ? msg->valuestring : "unknown");
         }
@@ -303,7 +341,11 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base,
     // 5. 处理云端属性设置 (Property Set - 兼容网关和子设备)
     if (strstr(topic_tmp, "thing/property/set") ||
         strstr(topic_tmp, "thing/sub/property/set")) {
+<<<<<<< HEAD
       ESP_LOGI(TAG, "收到云端属性设置指令");
+=======
+      ESP_LOGW(TAG, ">>> 收到云端属性设置指令!");
+>>>>>>> 3e70c77ee4c2f18d61b4633f3189556fcc6b895d
       cJSON *root = cJSON_ParseWithLength(event->data, event->data_len);
       if (root) {
         // 尝试获取消息 ID 用于回复
@@ -323,7 +365,11 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base,
           cJSON *pest_obj = cJSON_GetObjectItem(target_params, ATTRIBUTE1);
           if (pest_obj) {
             int val = pest_obj->valueint;
+<<<<<<< HEAD
             ESP_LOGI(TAG, "设置网关 PestAlarm: %d", val);
+=======
+            ESP_LOGW(TAG, ">>> [控制指令] 设置网关 PestAlarm 为: %d", val);
+>>>>>>> 3e70c77ee4c2f18d61b4633f3189556fcc6b895d
             gpio_set_level(LED_GW001_LED_PIN, val ? 0 : 1);
 
             // 状态回报
@@ -350,7 +396,11 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base,
           cJSON *node_led_obj = cJSON_GetObjectItem(target_params, ATTRIBUTE2);
           if (node_led_obj) {
             int val = node_led_obj->valueint;
+<<<<<<< HEAD
             ESP_LOGI(TAG, "设置子节点 LED: %d", val);
+=======
+            ESP_LOGW(TAG, ">>> [控制指令] 设置子节点 LED 为: %d", val);
+>>>>>>> 3e70c77ee4c2f18d61b4633f3189556fcc6b895d
             LoRa_ControlNodeLED(val);
 
             // 状态回报 (子设备控制回复同样建议发往网关的主题进行同步)
@@ -416,9 +466,27 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base,
  * @return esp_err_t 返回 ESP_OK 表示启动成功
  */
 esp_err_t esp_mqtt_app_start(const char *broker_uri) {
+<<<<<<< HEAD
   if (mqtt_client != NULL) {
     ESP_LOGW(TAG, "MQTT client already initialized, skip duplicate start");
     return ESP_OK;
+=======
+  // 移除硬编码延时，防止阻塞事件回调导致 WDT 超时
+  // ESP_LOGI(TAG, "正在等待网络和 DNS 稳定 (5秒)...");
+  // vTaskDelay(pdMS_TO_TICKS(5000));
+
+  // 检查网络状态 (调试用)
+  esp_netif_t *netif = esp_netif_get_handle_from_ifkey("PPP_DEF");
+  if (netif) {
+    esp_netif_ip_info_t ip_info;
+    if (esp_netif_get_ip_info(netif, &ip_info) == ESP_OK) {
+      ESP_LOGI(TAG, "当前 PPP 接口 IP: " IPSTR, IP2STR(&ip_info.ip));
+    } else {
+      ESP_LOGW(TAG, "无法获取 PPP 接口 IP 信息");
+    }
+  } else {
+    ESP_LOGW(TAG, "未找到 PPP 网络接口句柄");
+>>>>>>> 3e70c77ee4c2f18d61b4633f3189556fcc6b895d
   }
 
   // 移除硬编码延时，防止阻塞事件回调导致 WDT 超时

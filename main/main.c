@@ -42,6 +42,7 @@ void start_OTAWriteTask(void *pvParameters);
 // LoRa 轮询任务
 void lora_poll_task(void *pvParameters);
 
+<<<<<<< HEAD
 static void app_configure_log_levels(void) {
   esp_log_level_set("*", ESP_LOG_WARN);
 
@@ -91,9 +92,44 @@ static void start_boot_saved_wifi_ap_fallback(void) {
       wifi_manager_start_ap_provisioning("ESP32_Config", "12345678");
   if (err != ESP_OK) {
     ESP_LOGE("MAIN", "启动 AP 配网失败: %s", esp_err_to_name(err));
+=======
+/**
+ * @brief CAT1 延迟启动管理任务
+ * 逻辑：启动后先关闭 CAT1，等待 2 分钟，若 WiFi 未连接则启动 CAT1
+ */
+void cat1_delayed_start_task(void *pvParameters) {
+  ESP_LOGI("MAIN", "CAT1 延迟启动管理任务已启动，进入 2 分钟观察期...");
+
+  // 等待 120 秒
+  vTaskDelay(pdMS_TO_TICKS(120000));
+
+  // 检查是否已经通过 WiFi 连接成功
+  if (SysCB.SysEventFlag & CONNECT_WIFI) {
+    ESP_LOGI("MAIN",
+             "★★★ WiFi 已连接成功，CAT1 模块将保持关闭状态以节省功耗 ★★★");
+  } else {
+    ESP_LOGW("MAIN",
+             "！！！ WiFi 配网超时或未连接，正在激活 4G CAT1 备用链路 ！！！");
+
+    // 1. 初始化 4G Cat1 模块串口
+    if (Cat1_AT_Init() == ESP_OK) {
+      // 2. 执行开机序列
+      Cat1_Reset();
+
+      // 3. 启动后台辅助任务
+      xTaskCreate(start_Cat1Task, "cat1_task", 4096, NULL, 5, NULL);
+      // 4. 启动 MQTT 监控任务
+      xTaskCreate(Cat1_AT_Mqtt_Task, "at_mqtt_task", 8192, NULL, 5, NULL);
+    } else {
+      ESP_LOGE("MAIN", "4G Cat1 模块串口初始化失败");
+    }
+>>>>>>> 3e70c77ee4c2f18d61b4633f3189556fcc6b895d
   }
+
+  vTaskDelete(NULL);
 }
 
+<<<<<<< HEAD
 /**
  * @brief CAT1 延迟启动管理任务
  * 逻辑：启动后先关闭 CAT1，等待 2 分钟，若 WiFi 未连接则启动 CAT1
@@ -127,6 +163,8 @@ void cat1_delayed_start_task(void *pvParameters) {
   vTaskDelete(NULL);
 }
 
+=======
+>>>>>>> 3e70c77ee4c2f18d61b4633f3189556fcc6b895d
 // 统一传感器数据上传任务 (分三轮上报：网关空气 -> 网关土壤 -> 子节点数据)
 void unified_sensor_upload_task(void *pvParameters) {
   soil_sensor_data_t soil_data;
@@ -146,29 +184,49 @@ void unified_sensor_upload_task(void *pvParameters) {
       float air_temp = 25.5f;
       float air_hum = 60.0f;
       float air_lux = 150.0f;
+<<<<<<< HEAD
       ESP_LOGI("UPLOAD", "上报网关空气数据");
+=======
+      ESP_LOGI("UPLOAD", "Round 1: Uploading Gateway Air Data...");
+>>>>>>> 3e70c77ee4c2f18d61b4633f3189556fcc6b895d
       WiFi_Cat1_GatewayDataPost(air_temp, air_hum, air_lux);
       vTaskDelay(pdMS_TO_TICKS(2000)); // 轮次间隔延时
 
       // 第二轮：上报网关土壤数据
       if (soil_sensor_read_data(&soil_data) == ESP_OK) {
+<<<<<<< HEAD
         ESP_LOGI("UPLOAD", "上报网关土壤数据");
+=======
+        ESP_LOGI("UPLOAD", "Round 2: Uploading Gateway Soil Data...");
+>>>>>>> 3e70c77ee4c2f18d61b4633f3189556fcc6b895d
         WiFi_Cat1_SoilDataPost(soil_data.temperature, soil_data.humidity,
                                soil_data.ec, soil_data.nitrogen,
                                soil_data.phosphorus, soil_data.potassium);
       } else {
+<<<<<<< HEAD
         ESP_LOGW("UPLOAD", "跳过土壤数据：读取失败");
+=======
+        ESP_LOGW("UPLOAD", "Round 2: Skip Soil Data (Read Failed)");
+>>>>>>> 3e70c77ee4c2f18d61b4633f3189556fcc6b895d
       }
       vTaskDelay(pdMS_TO_TICKS(2000)); // 轮次间隔延时
 
       // 第三轮：上报子节点数据 (从缓存读取)
       if (SysCB.last_node_data.lightlux > 0) { // 简单判断是否有有效缓存
+<<<<<<< HEAD
         ESP_LOGI("UPLOAD", "上报子节点数据");
+=======
+        ESP_LOGI("UPLOAD", "Round 3: Uploading Sub-Node Data (Proxy)...");
+>>>>>>> 3e70c77ee4c2f18d61b4633f3189556fcc6b895d
         WiFi_Cat1_NodeDataPost(SysCB.last_node_data.temperature,
                                SysCB.last_node_data.humidity,
                                SysCB.last_node_data.lightlux);
       } else {
+<<<<<<< HEAD
         ESP_LOGW("UPLOAD", "跳过子节点数据：暂无缓存");
+=======
+        ESP_LOGW("UPLOAD", "Round 3: Skip Node Data (No Cache)");
+>>>>>>> 3e70c77ee4c2f18d61b4633f3189556fcc6b895d
       }
 
       if (!version_reported) {
@@ -185,7 +243,11 @@ void unified_sensor_upload_task(void *pvParameters) {
 
 // LoRa 轮询任务：定期检查子节点状态并触发读取
 void lora_poll_task(void *pvParameters) {
+<<<<<<< HEAD
   ESP_LOGI("LORA_TASK", "LoRa 轮询任务已启动");
+=======
+  ESP_LOGI("LORA_TASK", "LoRa Poll Task Started");
+>>>>>>> 3e70c77ee4c2f18d61b4633f3189556fcc6b895d
   static uint32_t last_test_send = 0;
   static uint32_t last_query_send = 0;
 
@@ -229,6 +291,7 @@ extern Sys_CB SysCB;
  */
 void wifi_state_callback(wifi_state_t state) {
   if (state == WIFI_STATE_CONNECTED) {
+<<<<<<< HEAD
     boot_saved_wifi_pending = false;
     if (mqtt_start_task_handle == NULL) {
       xTaskCreate(mqtt_start_task, "mqtt_start", 4096, NULL, 5,
@@ -237,14 +300,25 @@ void wifi_state_callback(wifi_state_t state) {
   } else if (state == WIFI_STATE_DISCONNECTED) {
     ESP_LOGW("MAIN", "WiFi 已断开，MQTT 将自动尝试重连或由监控任务处理");
     start_boot_saved_wifi_ap_fallback();
+=======
+    ESP_LOGI("MAIN", "WiFi 已就绪，正在启动 MQTT...");
+    esp_mqtt_app_start(NULL);
+  } else if (state == WIFI_STATE_DISCONNECTED) {
+    ESP_LOGW("MAIN", "WiFi 已断开，MQTT 将自动尝试重连或由监控任务处理");
+>>>>>>> 3e70c77ee4c2f18d61b4633f3189556fcc6b895d
   }
 }
 
 void app_main(void) {
+<<<<<<< HEAD
   app_configure_log_levels();
 
   ESP_LOGI("FIRMWARE", "固件版本: V99.99");
 
+=======
+  ESP_LOGE("FIRMWARE", "!!!!!!!! 当前固件版本号: V99.99 !!!!!!!! ");
+
+>>>>>>> 3e70c77ee4c2f18d61b4633f3189556fcc6b895d
   // 1. 初始化 NVS (WiFi 驱动必须)
   esp_err_t ret = nvs_flash_init();
   if (ret == ESP_ERR_NVS_NO_FREE_PAGES ||
@@ -279,11 +353,16 @@ void app_main(void) {
   // 【核心修改】初始化 CAT1 GPIO 并强制拉低（关闭模块）
   WiFi_Cat1_InitGPIO();
   CAT1_POWER(0);
+<<<<<<< HEAD
   ESP_LOGI("MAIN", "启动：优先使用 WiFi，CAT1 已关闭");
+=======
+  ESP_LOGI("MAIN", "已预先关闭 4G CAT1 模块，优先等待 WiFi 配网...");
+>>>>>>> 3e70c77ee4c2f18d61b4633f3189556fcc6b895d
 
   // 2. 调用硬件初始化代码
   bsp_led_init();
 
+<<<<<<< HEAD
   EEprom_Init();
 
   // 3. 初始化 WiFi 并启动 AP 配网服务
@@ -303,12 +382,26 @@ void app_main(void) {
     ESP_LOGI("MAIN", "未保存 WiFi，启动 AP 配网：ESP32_Config");
     wifi_manager_start_ap_provisioning("ESP32_Config", "12345678");
   }
+=======
+  // 3. 初始化 WiFi 并启动 AP 配网服务
+  wifi_manager_init();
+  wifi_set_state_callback(wifi_state_callback); // 注册状态回调
+  wifi_manager_start_ap_provisioning("ESP32_Config", "12345678");
+>>>>>>> 3e70c77ee4c2f18d61b4633f3189556fcc6b895d
 
   // 暂时屏蔽 I2C 传感器采集任务 (SHT30/BH1750)，改用固定值测试
   // iic_sensor_task_start();
 
   // 创建统一传感器数据上传任务 (分轮次：网关空气 -> 网关土壤 -> 子节点数据)
   xTaskCreate(unified_sensor_upload_task, "sensor_upload", 8192, NULL, 5, NULL);
+
+<<<<<<< HEAD
+  // 启动 CAT1 延迟启动管理任务 (2分钟后若无 WiFi 则启动 4G)
+  xTaskCreate(cat1_delayed_start_task, "cat1_delay", 4096, NULL, 5, NULL);
+=======
+  // 初始化 NVS
+  EEprom_Init();
+>>>>>>> 3e70c77ee4c2f18d61b4633f3189556fcc6b895d
 
   // 启动 CAT1 延迟启动管理任务 (2分钟后若无 WiFi 则启动 4G)
   xTaskCreate(cat1_delayed_start_task, "cat1_delay", 4096, NULL, 5, NULL);
