@@ -1,4 +1,4 @@
-#include "app_config.h"
+﻿#include "app_config.h"
 #include "bsp_led.h"
 #include "bsp_storage.h"
 #include "bsp_uart.h"
@@ -9,6 +9,9 @@
 #include "freertos/task.h"
 #include "mw1268_app.h"
 #include "soil_sensor.h"
+#include "IIC_SENSOR.h"
+#include "lvgl_ui.h"
+#include "lvgl.h"
 #include "wifi_cat1.h"
 #include "wifi_manager.h"
 #include <stdbool.h>
@@ -100,7 +103,7 @@ static void ota_bootstrap_task(void *pvParameters) {
   }
 
   if ((SysCB.SysEventFlag & CONNECT_WIFI) && !(SysCB.SysEventFlag & OTA_RUNNING)) {
-    Studio_OTA_CheckTask();
+    OneNET_FuseOTA_CheckTask();
   }
 
   ota_bootstrap_task_handle = NULL;
@@ -250,6 +253,62 @@ void wifi_state_callback(wifi_state_t state) {
   }
 }
 
+
+/* LVGL port interfaces */
+extern void lv_port_disp_init(void);
+extern void lv_port_indev_init(void);
+extern void lv_port_tick_init(void);
+
+
+/* LVGL task - reads sensors and updates the dashboard UI */
+static void lvgl_task(void *pvParameters) {
+  (void)pvParameters;
+
+  /* Give sensors time to initialise before first read */
+  vTaskDelay(pdMS_TO_TICKS(3000));
+
+  iic_sensor_data_t iic_data;
+  soil_sensor_data_t soil_data;
+  bool have_iic = false;
+  bool have_soil = false;
+  uint32_t tick = 0;
+
+  while (1) {
+    lv_timer_handler();
+
+    /* Refresh sensor readings every ~1 s (every 60 LVGL ticks at 16 ms) */
+    if ((tick % 60) == 0) {
+      /* I2C environmental sensors (SHT30 + BH1750) */
+      have_iic = (iic_sensor_get_data(&iic_data) == ESP_OK);
+      /* Soil UART sensor */
+      have_soil = (soil_sensor_read_data(&soil_data) == ESP_OK);
+
+      lvgl_ui_update(
+          have_iic  ? iic_data.temperature : -99.0f,
+          have_iic  ? iic_data.humidity    : -99.0f,
+          have_iic  ? iic_data.lux         : -99.0f,
+          have_soil ? soil_data.temperature : -99.0f,
+          have_soil ? soil_data.humidity    : -99.0f,
+          have_soil ? soil_data.ec          : -99.0f,
+          have_soil ? soil_data.ph          : -99.0f,
+          have_soil ? soil_data.nitrogen    : -99.0f,
+          have_soil ? soil_data.phosphorus  : -99.0f,
+          have_soil ? soil_data.potassium   : -99.0f,
+          have_soil ? soil_data.salinity    : -99.0f);
+
+      /* System status */
+      bool w_ok = (SysCB.SysEventFlag & CONNECT_WIFI) != 0;
+      bool m_ok = (SysCB.SysEventFlag & CONNECT_MQTT) != 0;
+      bool l_ok = (SysCB.SysEventFlag & SUB_LORA_CONFIRMED) != 0;
+      bool o_ok = (SysCB.SysEventFlag & OTA_RUNNING) != 0;
+
+      lvgl_ui_update_sys(w_ok, m_ok, l_ok, o_ok, NULL, CURRENT_FW_VERSION);
+    }
+
+    tick++;
+    vTaskDelay(pdMS_TO_TICKS(16));
+  }
+}
 void app_main(void) {
   app_configure_log_levels();
   ESP_LOGI("FIRMWARE", "当前固件版本: %s",
@@ -260,18 +319,21 @@ void app_main(void) {
 
   srand((unsigned int)time(NULL));
 
+#if (SOIL_UART_POWER_PIN >= 0) || (SOIL_UART_GND_PIN >= 0)
   gpio_config_t power_conf = {
       .intr_type = GPIO_INTR_DISABLE,
       .mode = GPIO_MODE_OUTPUT,
       .pin_bit_mask =
-          (1ULL << SOIL_UART_POWER_PIN) | (1ULL << SOIL_UART_GND_PIN),
+          ((SOIL_UART_POWER_PIN >= 0) ? (1ULL << SOIL_UART_POWER_PIN) : 0) |
+          ((SOIL_UART_GND_PIN >= 0)   ? (1ULL << SOIL_UART_GND_PIN)   : 0),
       .pull_down_en = 0,
       .pull_up_en = 0,
   };
   gpio_config(&power_conf);
 
-  gpio_set_level(SOIL_UART_POWER_PIN, 1);
-  gpio_set_level(SOIL_UART_GND_PIN, 0);
+  if (SOIL_UART_POWER_PIN >= 0) gpio_set_level(SOIL_UART_POWER_PIN, 1);
+  if (SOIL_UART_GND_PIN >= 0)   gpio_set_level(SOIL_UART_GND_PIN, 0);
+#endif
   vTaskDelay(pdMS_TO_TICKS(500));
 
   WiFi_Cat1_InitGPIO();
@@ -300,6 +362,18 @@ void app_main(void) {
   xTaskCreate(cat1_delayed_start_task, "cat1_delay", 4096, NULL, 5, NULL);
 
   soil_sensor_init();
+
+  /* LVGL init */
+  ESP_LOGI("MAIN", "Initializing LVGL...");
+  lv_init();
+  lv_port_tick_init();
+  lv_port_disp_init();
+  lv_port_indev_init();
+
+  lvgl_ui_create();
+  ESP_LOGI("MAIN", "LVGL sensor dashboard started");
+
+  xTaskCreate(lvgl_task, "lvgl", 20480, NULL, 5, NULL);
   LoRa_Init();
   xTaskCreate(lora_poll_task, "lora_poll_task", 4096, NULL, 5, NULL);
 
