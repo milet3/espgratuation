@@ -19,9 +19,9 @@
 #define TAG "XPT2046"
 
 /* ====== Sensitivity Tuning ====== */
-#define TOUCH_SAMPLES       4    /* Number of samples to average (1-8) */
-#define PRESSURE_THRESHOLD  50   /* Minimum Z pressure, lower=more sensitive */
-#define TOUCH_SPI_SPEED_HZ  2000000  /* 2 MHz (XPT2046 max) */
+#define TOUCH_SAMPLES       2    /* Number of samples to average (1-8) */
+#define PRESSURE_THRESHOLD  15   /* Minimum Z pressure, lower=more sensitive */
+#define TOUCH_SPI_SPEED_HZ  1500000  /* 2 MHz (XPT2046 max) */
 
 /* XPT2046 commands (differential, 12-bit) */
 #define CMD_X  0x90

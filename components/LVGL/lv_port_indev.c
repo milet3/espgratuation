@@ -21,7 +21,7 @@
 #define SCREEN_HEIGHT 240
 
 /* Debounce: require N consecutive same-state readings */
-#define DEBOUNCE_COUNT  2
+#define DEBOUNCE_COUNT  1
 
 /* Linear map */
 static uint16_t calibrate(uint16_t raw, uint16_t raw_min,
