@@ -1,4 +1,4 @@
-#include "wifi_manager.h"
+﻿#include "wifi_manager.h"
 #include "bsp_storage.h"
 #include "esp_event.h"
 #include "esp_http_server.h"
@@ -202,11 +202,11 @@ static void event_handler(void *arg, esp_event_base_t event_base,
       // 安全地处理硬件操作：不阻塞事件任务
       // 修正：只有当 CAT1 已经上电时才尝试关机，并且增加引脚有效性检查
       if (is_ap_active && wifi_cleanup_task_handle == NULL) {
-        xTaskCreate(wifi_connected_cleanup_task, "wifi_cleanup", 3072, NULL, 5,
+        xTaskCreate(wifi_connected_cleanup_task, "wifi_cleanup", 3072, NULL, 3,
                     &wifi_cleanup_task_handle);
       }
       if (CAT1_POWER_STATE_PIN >= 0) {
-        xTaskCreate(cat1_shutdown_task, "cat1_off", 2048, NULL, 5, NULL);
+        xTaskCreate(cat1_shutdown_task, "cat1_off", 2048, NULL, 3, NULL);
       }
       break;
     }
@@ -553,7 +553,7 @@ static void start_captive_dns_server(void) {
   }
 
   dns_server_running = true;
-  xTaskCreate(captive_dns_task, "captive_dns", 4096, NULL, 5,
+  xTaskCreate(captive_dns_task, "captive_dns", 4096, NULL, 4,
               &dns_task_handle);
 }
 

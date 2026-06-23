@@ -138,8 +138,8 @@ void cat1_delayed_start_task(void *pvParameters) {
     ESP_LOGW("MAIN", "WiFi 不可用，启用 CAT1 备用链路");
     if (Cat1_AT_Init() == ESP_OK) {
       Cat1_Reset();
-      xTaskCreate(start_Cat1Task, "cat1_task", 4096, NULL, 5, NULL);
-      xTaskCreate(Cat1_AT_Mqtt_Task, "at_mqtt_task", 8192, NULL, 5, NULL);
+      xTaskCreate(start_Cat1Task, "cat1_task", 4096, NULL, 4, NULL);
+      xTaskCreate(Cat1_AT_Mqtt_Task, "at_mqtt_task", 8192, NULL, 4, NULL);
     } else {
       ESP_LOGE("MAIN", "初始化 CAT1 模块失败");
     }
@@ -243,7 +243,7 @@ void wifi_state_callback(wifi_state_t state) {
                   &mqtt_start_task_handle);
     }
     if (ota_bootstrap_task_handle == NULL) {
-      xTaskCreate(ota_bootstrap_task, "ota_boot", 12288, NULL, 3,
+      xTaskCreate(ota_bootstrap_task, "ota_boot", 12288, NULL, 5,
                   &ota_bootstrap_task_handle);
     }
   } else if (state == WIFI_STATE_DISCONNECTED) {
@@ -359,7 +359,7 @@ void app_main(void) {
   }
 
   xTaskCreate(unified_sensor_upload_task, "sensor_upload", 8192, NULL, 5, NULL);
-  xTaskCreate(cat1_delayed_start_task, "cat1_delay", 4096, NULL, 5, NULL);
+  xTaskCreate(cat1_delayed_start_task, "cat1_delay", 4096, NULL, 4, NULL);
 
   soil_sensor_init();
 
@@ -373,9 +373,9 @@ void app_main(void) {
   lvgl_ui_create();
   ESP_LOGI("MAIN", "LVGL sensor dashboard started");
 
-  xTaskCreate(lvgl_task, "lvgl", 20480, NULL, 5, NULL);
+  xTaskCreate(lvgl_task, "lvgl", 20480, NULL, 3, NULL);
   LoRa_Init();
-  xTaskCreate(lora_poll_task, "lora_poll_task", 4096, NULL, 5, NULL);
+  xTaskCreate(lora_poll_task, "lora_poll_task", 4096, NULL, 6, NULL);
 
   while (1) {
     vTaskDelay(pdMS_TO_TICKS(10000));
