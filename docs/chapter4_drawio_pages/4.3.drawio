@@ -1,0 +1,96 @@
+<mxfile host="app.diagrams.net" version="24.7.17">
+  <diagram name="4.3 WiFi 配网与网络切换设计" id="page-77">
+    <mxGraphModel dx="1600" dy="1080" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="1080" math="0" shadow="0">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+        <mxCell id="v-50" value="设备启动&lt;div&gt;wifi_manager_init() 完成&lt;/div&gt;" style="ellipse;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#000000;fontColor=#000000;fontSize=22;fontStyle=1;align=center;verticalAlign=middle;spacing=10;strokeWidth=2;" vertex="1" parent="1">
+          <mxGeometry x="625" y="20" width="350" height="76" as="geometry"/>
+        </mxCell>
+        <mxCell id="v-51" value="是否存在历史 WiFi 配置？" style="rhombus;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#000000;fontColor=#000000;fontSize=20;fontStyle=1;align=center;verticalAlign=middle;spacing=10;strokeWidth=2;" vertex="1" parent="1">
+          <mxGeometry x="650" y="130" width="300" height="120" as="geometry"/>
+        </mxCell>
+        <mxCell id="v-52" value="直接使用已保存的&lt;div&gt;SSID / Password&lt;/div&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#000000;fontColor=#000000;fontSize=20;align=center;verticalAlign=middle;spacing=10;strokeWidth=2;" vertex="1" parent="1">
+          <mxGeometry x="100" y="144" width="390" height="90" as="geometry"/>
+        </mxCell>
+        <mxCell id="v-53" value="进入 AP 配网模式&lt;div&gt;启动 AP / DHCP / DNS / HTTP 配网页面&lt;/div&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#000000;fontColor=#000000;fontSize=20;align=center;verticalAlign=middle;spacing=10;strokeWidth=2;" vertex="1" parent="1">
+          <mxGeometry x="1060" y="132" width="420" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="v-54" value="手机 / 电脑连接 ESP32_Config&lt;div&gt;提交 SSID 和 Password&lt;/div&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#000000;fontColor=#000000;fontSize=20;align=center;verticalAlign=middle;spacing=10;strokeWidth=2;" vertex="1" parent="1">
+          <mxGeometry x="1060" y="270" width="420" height="88" as="geometry"/>
+        </mxCell>
+        <mxCell id="v-55" value="wifi_manager_connect()&lt;div&gt;发起 STA 连接&lt;/div&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#000000;fontColor=#000000;fontSize=20;align=center;verticalAlign=middle;spacing=10;strokeWidth=2;" vertex="1" parent="1">
+          <mxGeometry x="590" y="304" width="420" height="86" as="geometry"/>
+        </mxCell>
+        <mxCell id="v-56" value="是否成功获取 IP？&lt;div&gt;(IP_EVENT_STA_GOT_IP)&lt;/div&gt;" style="rhombus;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#000000;fontColor=#000000;fontSize=20;fontStyle=1;align=center;verticalAlign=middle;spacing=10;strokeWidth=2;" vertex="1" parent="1">
+          <mxGeometry x="660" y="434" width="280" height="118" as="geometry"/>
+        </mxCell>
+        <mxCell id="v-57" value="" style="ellipse;whiteSpace=wrap;html=1;fillColor=none;strokeColor=none;opacity=0;resizable=0;movable=0;deletable=0;rotatable=0;" vertex="1" parent="1">
+          <mxGeometry x="799" y="406" width="2" height="2" as="geometry"/>
+        </mxCell>
+        <mxCell id="v-58" value="保存 wifi_sta_cfg&lt;div&gt;关闭 AP / DNS / HTTP&lt;/div&gt;&lt;div&gt;切回纯 STA 模式并关闭 Cat1&lt;/div&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#000000;fontColor=#000000;fontSize=20;align=center;verticalAlign=middle;spacing=10;strokeWidth=2;" vertex="1" parent="1">
+          <mxGeometry x="120" y="594" width="420" height="118" as="geometry"/>
+        </mxCell>
+        <mxCell id="v-59" value="wifi_state_callback()&lt;div&gt;启动 MQTT 与 OTA bootstrap&lt;/div&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#000000;fontColor=#000000;fontSize=22;fontStyle=1;align=center;verticalAlign=middle;spacing=10;strokeWidth=2;" vertex="1" parent="1">
+          <mxGeometry x="120" y="752" width="420" height="84" as="geometry"/>
+        </mxCell>
+        <mxCell id="v-60" value="连接断开后自动重试&lt;div&gt;WIFI_EVENT_STA_DISCONNECTED / esp_wifi_connect() 最多 6 次&lt;/div&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#000000;fontColor=#000000;fontSize=20;align=center;verticalAlign=middle;spacing=10;strokeWidth=2;" vertex="1" parent="1">
+          <mxGeometry x="1010" y="588" width="470" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="v-61" value="仍未连接成功&lt;div&gt;回到 AP 配网入口重新提交&lt;/div&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#000000;fontColor=#000000;fontSize=20;align=center;verticalAlign=middle;spacing=10;strokeWidth=2;" vertex="1" parent="1">
+          <mxGeometry x="1080" y="734" width="330" height="84" as="geometry"/>
+        </mxCell>
+        <mxCell id="v-62" value="补充：cat1_delayed_start_task 在 120s 后检查 WiFi&lt;div&gt;若仍不可用，则启动 Cat1 备份链路&lt;/div&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#000000;fontColor=#000000;fontSize=18;align=center;verticalAlign=middle;spacing=10;strokeWidth=2;dashed=1;" vertex="1" parent="1">
+          <mxGeometry x="430" y="878" width="740" height="84" as="geometry"/>
+        </mxCell>
+        <mxCell id="e-63" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#000000;strokeWidth=2;endArrow=block;endFill=1;exitY=1;entryY=0;" edge="1" parent="1" source="v-50" target="v-51">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e-64" value="是" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#000000;strokeWidth=2;endArrow=block;endFill=1;fontSize=18;labelBackgroundColor=#FFFFFF;exitX=0;exitY=0.5;entryX=1;entryY=0.5;" edge="1" parent="1" source="v-51" target="v-52">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e-65" value="否" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#000000;strokeWidth=2;endArrow=block;endFill=1;fontSize=18;labelBackgroundColor=#FFFFFF;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" parent="1" source="v-51" target="v-53">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e-66" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#000000;strokeWidth=2;endArrow=block;endFill=1;exitY=1;entryY=0;" edge="1" parent="1" source="v-53" target="v-54">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e-67" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#000000;strokeWidth=2;endArrow=block;endFill=1;exitY=1;entryX=0;entryY=0.5;" edge="1" parent="1" source="v-52" target="v-55">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e-68" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#000000;strokeWidth=2;endArrow=block;endFill=1;exitX=0;exitY=0.5;entryX=1;entryY=0.5;" edge="1" parent="1" source="v-54" target="v-55">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e-69" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#000000;strokeWidth=2;endArrow=block;endFill=1;exitX=0.5;exitY=1;entryX=0.5;entryY=0;endArrow=none;" edge="1" parent="1" source="v-55" target="v-57">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e-70" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#000000;strokeWidth=2;endArrow=block;endFill=1;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="v-57" target="v-56">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e-71" value="是" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#000000;strokeWidth=2;endArrow=block;endFill=1;fontSize=18;labelBackgroundColor=#FFFFFF;exitX=0;exitY=0.5;entryX=1;entryY=0.5;" edge="1" parent="1" source="v-56" target="v-58">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e-72" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#000000;strokeWidth=2;endArrow=block;endFill=1;exitY=1;entryY=0;" edge="1" parent="1" source="v-58" target="v-59">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e-73" value="否" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#000000;strokeWidth=2;endArrow=block;endFill=1;fontSize=18;labelBackgroundColor=#FFFFFF;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" parent="1" source="v-56" target="v-60">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e-74" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#000000;strokeWidth=2;endArrow=block;endFill=1;exitY=1;entryY=0;" edge="1" parent="1" source="v-60" target="v-61">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e-75" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#000000;strokeWidth=2;endArrow=block;endFill=1;exitX=1;exitY=0.5;entryX=1;entryY=0.5;" edge="1" parent="1" source="v-61" target="v-53">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1540" y="776"/>
+              <mxPoint x="1540" y="182"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e-76" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#000000;strokeWidth=2;endArrow=block;endFill=1;dashed=1;endArrow=none;strokeColor=#000000;" edge="1" parent="1" source="v-59" target="v-62">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

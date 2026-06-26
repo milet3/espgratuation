@@ -1,0 +1,67 @@
+<mxfile host="app.diagrams.net" version="24.7.17">
+  <diagram name="4.6 本地存储设计" id="page-155">
+    <mxGraphModel dx="1600" dy="980" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="980" math="0" shadow="0">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+        <mxCell id="v-136" value="EEprom_Init()&lt;div&gt;nvs_flash_init()&lt;/div&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#000000;fontColor=#000000;fontSize=22;fontStyle=1;align=center;verticalAlign=middle;spacing=10;strokeWidth=2;" vertex="1" parent="1">
+          <mxGeometry x="615" y="40" width="370" height="84" as="geometry"/>
+        </mxCell>
+        <mxCell id="v-137" value="EEprom_ReadData / EEprom_WriteData&lt;div&gt;nvs_open + get_blob / set_blob + nvs_commit&lt;/div&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#000000;fontColor=#000000;fontSize=22;fontStyle=1;align=center;verticalAlign=middle;spacing=10;strokeWidth=2;" vertex="1" parent="1">
+          <mxGeometry x="400" y="182" width="800" height="94" as="geometry"/>
+        </mxCell>
+        <mxCell id="v-138" value="info_data&lt;div&gt;网关 / 子设备版本&lt;/div&gt;&lt;div&gt;OTA 标志与长度信息&lt;/div&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#000000;fontColor=#000000;fontSize=20;align=center;verticalAlign=middle;spacing=10;strokeWidth=2;" vertex="1" parent="1">
+          <mxGeometry x="110" y="346" width="320" height="110" as="geometry"/>
+        </mxCell>
+        <mxCell id="v-139" value="wifi_sta_cfg&lt;div&gt;SSID / Password&lt;/div&gt;&lt;div&gt;仅在 GOT_IP 后写入&lt;/div&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#000000;fontColor=#000000;fontSize=20;align=center;verticalAlign=middle;spacing=10;strokeWidth=2;" vertex="1" parent="1">
+          <mxGeometry x="640" y="346" width="320" height="110" as="geometry"/>
+        </mxCell>
+        <mxCell id="v-140" value="ota_pending&lt;div&gt;status_url / target_version&lt;/div&gt;&lt;div&gt;用于升级后成功确认&lt;/div&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#000000;fontColor=#000000;fontSize=20;align=center;verticalAlign=middle;spacing=10;strokeWidth=2;" vertex="1" parent="1">
+          <mxGeometry x="1170" y="346" width="320" height="110" as="geometry"/>
+        </mxCell>
+        <mxCell id="v-141" value="开机读取版本与历史配置&lt;div&gt;决定直接连网还是进入 AP 配网&lt;/div&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#000000;fontColor=#000000;fontSize=20;align=center;verticalAlign=middle;spacing=10;strokeWidth=2;" vertex="1" parent="1">
+          <mxGeometry x="110" y="536" width="320" height="96" as="geometry"/>
+        </mxCell>
+        <mxCell id="v-142" value="WiFi 拿到 IP 后&lt;div&gt;保存成功凭据，避免错误密码覆盖旧配置&lt;/div&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#000000;fontColor=#000000;fontSize=20;align=center;verticalAlign=middle;spacing=10;strokeWidth=2;" vertex="1" parent="1">
+          <mxGeometry x="640" y="536" width="320" height="96" as="geometry"/>
+        </mxCell>
+        <mxCell id="v-143" value="新固件启动后&lt;div&gt;读取 ota_pending 并上报 OTA step=201&lt;/div&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#000000;fontColor=#000000;fontSize=20;align=center;verticalAlign=middle;spacing=10;strokeWidth=2;" vertex="1" parent="1">
+          <mxGeometry x="1170" y="536" width="320" height="96" as="geometry"/>
+        </mxCell>
+        <mxCell id="v-144" value="目的&lt;div&gt;保证重启后仍能恢复联网状态、版本信息与升级确认流程&lt;/div&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#000000;fontColor=#000000;fontSize=18;align=center;verticalAlign=middle;spacing=10;strokeWidth=2;dashed=1;" vertex="1" parent="1">
+          <mxGeometry x="390" y="720" width="820" height="92" as="geometry"/>
+        </mxCell>
+        <mxCell id="e-145" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#000000;strokeWidth=2;endArrow=block;endFill=1;exitY=1;entryY=0;" edge="1" parent="1" source="v-136" target="v-137">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e-146" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#000000;strokeWidth=2;endArrow=block;endFill=1;exitX=0.15;exitY=1;entryY=0;" edge="1" parent="1" source="v-137" target="v-138">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e-147" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#000000;strokeWidth=2;endArrow=block;endFill=1;exitY=1;entryY=0;" edge="1" parent="1" source="v-137" target="v-139">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e-148" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#000000;strokeWidth=2;endArrow=block;endFill=1;exitX=0.85;exitY=1;entryY=0;" edge="1" parent="1" source="v-137" target="v-140">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e-149" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#000000;strokeWidth=2;endArrow=block;endFill=1;exitY=1;entryY=0;" edge="1" parent="1" source="v-138" target="v-141">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e-150" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#000000;strokeWidth=2;endArrow=block;endFill=1;exitY=1;entryY=0;" edge="1" parent="1" source="v-139" target="v-142">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e-151" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#000000;strokeWidth=2;endArrow=block;endFill=1;exitY=1;entryY=0;" edge="1" parent="1" source="v-140" target="v-143">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e-152" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#000000;strokeWidth=2;endArrow=block;endFill=1;dashed=1;strokeColor=#000000;" edge="1" parent="1" source="v-141" target="v-144">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e-153" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#000000;strokeWidth=2;endArrow=block;endFill=1;dashed=1;strokeColor=#000000;" edge="1" parent="1" source="v-142" target="v-144">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e-154" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#000000;strokeWidth=2;endArrow=block;endFill=1;dashed=1;strokeColor=#000000;" edge="1" parent="1" source="v-143" target="v-144">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

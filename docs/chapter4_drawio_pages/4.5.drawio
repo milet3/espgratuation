@@ -1,0 +1,100 @@
+<mxfile host="app.diagrams.net" version="24.7.17">
+  <diagram name="4.5 Cat1 联网与 MQTT 通信设计" id="page-134">
+    <mxGraphModel dx="1600" dy="1120" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="1120" math="0" shadow="0">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+        <mxCell id="v-104" value="WiFi 链路是否可用？" style="rhombus;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#000000;fontColor=#000000;fontSize=20;fontStyle=1;align=center;verticalAlign=middle;spacing=10;strokeWidth=2;" vertex="1" parent="1">
+          <mxGeometry x="650" y="26" width="300" height="114" as="geometry"/>
+        </mxCell>
+        <mxCell id="v-105" value="WiFi 已连接&lt;div&gt;esp_mqtt_app_start()&lt;/div&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#000000;fontColor=#000000;fontSize=20;align=center;verticalAlign=middle;spacing=10;strokeWidth=2;" vertex="1" parent="1">
+          <mxGeometry x="140" y="186" width="340" height="84" as="geometry"/>
+        </mxCell>
+        <mxCell id="v-106" value="120s 内仍无 WiFi&lt;div&gt;启动 Cat1_AT_Mqtt_Task&lt;/div&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#000000;fontColor=#000000;fontSize=20;align=center;verticalAlign=middle;spacing=10;strokeWidth=2;" vertex="1" parent="1">
+          <mxGeometry x="1120" y="186" width="340" height="84" as="geometry"/>
+        </mxCell>
+        <mxCell id="v-107" value="MQTT_Init()&lt;div&gt;计算 OneNET token 与 Topic&lt;/div&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#000000;fontColor=#000000;fontSize=20;align=center;verticalAlign=middle;spacing=10;strokeWidth=2;" vertex="1" parent="1">
+          <mxGeometry x="140" y="314" width="340" height="84" as="geometry"/>
+        </mxCell>
+        <mxCell id="v-108" value="AT 检测 / 注网 / APN / QIACT&lt;div&gt;QMTOPEN + QMTCONN 建立会话&lt;/div&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#000000;fontColor=#000000;fontSize=20;align=center;verticalAlign=middle;spacing=10;strokeWidth=2;" vertex="1" parent="1">
+          <mxGeometry x="1080" y="302" width="420" height="106" as="geometry"/>
+        </mxCell>
+        <mxCell id="v-109" value="建立 MQTT 会话&lt;div&gt;置位 CONNECT_MQTT 并订阅 9 个 Topic&lt;/div&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#000000;fontColor=#000000;fontSize=22;fontStyle=1;align=center;verticalAlign=middle;spacing=10;strokeWidth=2;" vertex="1" parent="1">
+          <mxGeometry x="525" y="466" width="550" height="84" as="geometry"/>
+        </mxCell>
+        <mxCell id="v-110" value="若 LoRa 已确认&lt;div&gt;调用 WiFi_Cat1_SubOnline() 上报子设备上线&lt;/div&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#000000;fontColor=#000000;fontSize=20;align=center;verticalAlign=middle;spacing=10;strokeWidth=2;" vertex="1" parent="1">
+          <mxGeometry x="525" y="592" width="550" height="84" as="geometry"/>
+        </mxCell>
+        <mxCell id="v-111" value="统一数据上报&lt;div&gt;GatewayDataPost / SoilDataPost / NodeDataPost&lt;/div&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#000000;fontColor=#000000;fontSize=20;align=center;verticalAlign=middle;spacing=10;strokeWidth=2;" vertex="1" parent="1">
+          <mxGeometry x="100" y="734" width="390" height="96" as="geometry"/>
+        </mxCell>
+        <mxCell id="v-112" value="下行属性控制&lt;div&gt;PestAlarm -&gt; 板载 LED&lt;/div&gt;&lt;div&gt;PowerSwitch_2 -&gt; LoRa_ControlNodeLED&lt;/div&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#000000;fontColor=#000000;fontSize=20;align=center;verticalAlign=middle;spacing=10;strokeWidth=2;" vertex="1" parent="1">
+          <mxGeometry x="575" y="728" width="450" height="110" as="geometry"/>
+        </mxCell>
+        <mxCell id="v-113" value="收到 /ota/inform&lt;div&gt;回发 inform_reply -&gt; OneNET_FuseOTA_CheckTask&lt;/div&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#000000;fontColor=#000000;fontSize=20;align=center;verticalAlign=middle;spacing=10;strokeWidth=2;" vertex="1" parent="1">
+          <mxGeometry x="1110" y="734" width="390" height="96" as="geometry"/>
+        </mxCell>
+        <mxCell id="v-114" value="OneNET 云平台&lt;div&gt;数据上报 + 指令下发 + OTA 通知&lt;/div&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#000000;fontColor=#000000;fontSize=22;fontStyle=1;align=center;verticalAlign=middle;spacing=10;strokeWidth=2;" vertex="1" parent="1">
+          <mxGeometry x="500" y="906" width="600" height="86" as="geometry"/>
+        </mxCell>
+        <mxCell id="v-115" value="" style="ellipse;whiteSpace=wrap;html=1;fillColor=none;strokeColor=none;opacity=0;resizable=0;movable=0;deletable=0;rotatable=0;" vertex="1" parent="1">
+          <mxGeometry x="309" y="432" width="2" height="2" as="geometry"/>
+        </mxCell>
+        <mxCell id="v-116" value="" style="ellipse;whiteSpace=wrap;html=1;fillColor=none;strokeColor=none;opacity=0;resizable=0;movable=0;deletable=0;rotatable=0;" vertex="1" parent="1">
+          <mxGeometry x="799" y="432" width="2" height="2" as="geometry"/>
+        </mxCell>
+        <mxCell id="v-117" value="" style="ellipse;whiteSpace=wrap;html=1;fillColor=none;strokeColor=none;opacity=0;resizable=0;movable=0;deletable=0;rotatable=0;" vertex="1" parent="1">
+          <mxGeometry x="1289" y="432" width="2" height="2" as="geometry"/>
+        </mxCell>
+        <mxCell id="e-118" value="是" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#000000;strokeWidth=2;endArrow=block;endFill=1;fontSize=18;labelBackgroundColor=#FFFFFF;exitX=0;exitY=0.5;entryX=1;entryY=0.5;" edge="1" parent="1" source="v-104" target="v-105">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e-119" value="否" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#000000;strokeWidth=2;endArrow=block;endFill=1;fontSize=18;labelBackgroundColor=#FFFFFF;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" parent="1" source="v-104" target="v-106">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e-120" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#000000;strokeWidth=2;endArrow=block;endFill=1;exitY=1;entryY=0;" edge="1" parent="1" source="v-105" target="v-107">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e-121" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#000000;strokeWidth=2;endArrow=block;endFill=1;exitX=0.5;exitY=1;entryX=0.5;entryY=0;endArrow=none;" edge="1" parent="1" source="v-107" target="v-115">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e-122" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#000000;strokeWidth=2;endArrow=block;endFill=1;exitX=1;exitY=0.5;entryX=0;entryY=0.5;endArrow=none;" edge="1" parent="1" source="v-115" target="v-116">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e-123" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#000000;strokeWidth=2;endArrow=block;endFill=1;exitY=1;entryY=0;" edge="1" parent="1" source="v-106" target="v-108">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e-124" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#000000;strokeWidth=2;endArrow=block;endFill=1;exitX=0.5;exitY=1;entryX=0.5;entryY=0;endArrow=none;" edge="1" parent="1" source="v-108" target="v-117">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e-125" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#000000;strokeWidth=2;endArrow=block;endFill=1;exitX=0;exitY=0.5;entryX=1;entryY=0.5;endArrow=none;" edge="1" parent="1" source="v-117" target="v-116">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e-126" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#000000;strokeWidth=2;endArrow=block;endFill=1;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="v-116" target="v-109">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e-127" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#000000;strokeWidth=2;endArrow=block;endFill=1;exitY=1;entryY=0;" edge="1" parent="1" source="v-109" target="v-110">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e-128" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#000000;strokeWidth=2;endArrow=block;endFill=1;exitX=0;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="v-110" target="v-111">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e-129" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#000000;strokeWidth=2;endArrow=block;endFill=1;exitY=1;entryY=0;" edge="1" parent="1" source="v-110" target="v-112">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e-130" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#000000;strokeWidth=2;endArrow=block;endFill=1;exitX=1;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="v-110" target="v-113">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e-131" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#000000;strokeWidth=2;endArrow=block;endFill=1;exitY=1;entryX=0.2;entryY=0;" edge="1" parent="1" source="v-111" target="v-114">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e-132" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#000000;strokeWidth=2;endArrow=block;endFill=1;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="v-112" target="v-114">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e-133" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#000000;strokeWidth=2;endArrow=block;endFill=1;exitY=1;entryX=0.8;entryY=0;" edge="1" parent="1" source="v-113" target="v-114">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

@@ -1,0 +1,49 @@
+﻿/* ═══════════════════════════════════════════════════════════════
+ * OTA ZC 预分配内存池
+ * 一次 malloc N 个固定大小 chunk，用完归还，永不 free
+ * ═══════════════════════════════════════════════════════════════ */
+#define OTA_ZC_CHUNK_SIZE (sizeof(OTA_ZC_Chunk) + OTA_ZC_CHUNK_DATA_MAX)
+
+typedef struct {
+  OTA_ZC_Chunk *chunks[OTA_ZC_POOL_SIZE];
+  int free_stack[OTA_ZC_POOL_SIZE];
+  int free_count;
+  SemaphoreHandle_t mutex;
+  bool initialized;
+} OTA_ZC_Pool;
+
+static OTA_ZC_Pool g_ota_zc_pool = { .initialized = false };
+
+void ota_zc_pool_init(void)
+{
+  if (g_ota_zc_pool.initialized) return;
+  g_ota_zc_pool.mutex = xSemaphoreCreateMutex();
+  if (g_ota_zc_pool.mutex == NULL) {
+    ESP_LOGE(OTA_TAG, "ota_zc_pool: mutex create failed");
+    return;
+  }
+  int allocated = 0;
+  for (int i = 0; i < OTA_ZC_POOL_SIZE; i++) {
+    g_ota_zc_pool.chunks[i] =
+        (OTA_ZC_Chunk *)heap_caps_malloc(OTA_ZC_CHUNK_SIZE, MALLOC_CAP_SPIRAM);
+    if (g_ota_zc_pool.chunks[i] == NULL) {
+      g_ota_zc_pool.chunks[i] =
+          (OTA_ZC_Chunk *)heap_caps_malloc(OTA_ZC_CHUNK_SIZE, MALLOC_CAP_INTERNAL);
+    }
+    if (g_ota_zc_pool.chunks[i] == NULL) break;
+    allocated++;
+  }
+  if (allocated == 0) {
+    ESP_LOGE(OTA_TAG, "ota_zc_pool: no memory for chunks");
+    vSemaphoreDelete(g_ota_zc_pool.mutex);
+    g_ota_zc_pool.mutex = NULL;
+    return;
+  }
+  for (int i = 0; i < allocated; i++) {
+    g_ota_zc_pool.free_stack[i] = i;
+  }
+  g_ota_zc_pool.free_count = allocated;
+  g_ota_zc_pool.initialized = true;
+  ESP_LOGI(OTA_TAG, "ota_zc_pool init: %d chunks (%u bytes each)",
+           allocated, (unsigned int)OTA_ZC_CHUNK_SIZE);
+}

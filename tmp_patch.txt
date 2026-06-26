@@ -1,0 +1,7 @@
+﻿*** Begin Patch
+*** Update File: main/main.c
+@@
+      xTaskCreate(start_Cat1Task, "cat1_task", 4096, NULL, 5, NULL);
+@@
+      xTaskCreate(start_Cat1Task, "cat1_task", 4096, NULL, 4, NULL);
+*** End Patch

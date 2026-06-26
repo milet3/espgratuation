@@ -1,0 +1,100 @@
+﻿/* OTA ZC consumer: dequeue chunk, esp_ota_write, return to pool */
+void WiFi_Cat1_OTADownload(uint16_t a, uint16_t b, uint8_t c)
+{
+  (void)c;
+  uint32_t total_size = (uint32_t)a;
+  uint8_t  ota_staflag = (uint8_t)b;
+
+  if (OTA_ZC_Queue == NULL) {
+    ESP_LOGE(OTA_TAG, "OTA_ZC_Queue not initialized");
+    return;
+  }
+  if (SysCB.SysEventFlag & OTA_RUNNING) {
+    ESP_LOGW(OTA_TAG, "OTA_ZC consumer already running");
+    return;
+  }
+
+  SysCB.SysEventFlag |= OTA_RUNNING;
+  ota_zc_pool_init();
+
+  const esp_partition_t *update_partition =
+      esp_ota_get_next_update_partition(NULL);
+  if (update_partition == NULL) {
+    ESP_LOGE(OTA_TAG, "OTA_ZC: no update partition");
+    goto zc_cleanup;
+  }
+
+  esp_ota_handle_t ota_handle = 0;
+  esp_err_t err = esp_ota_begin(update_partition,
+                                 total_size > 0 ? total_size : OTA_SIZE_UNKNOWN,
+                                 &ota_handle);
+  if (err != ESP_OK) {
+    ESP_LOGE(OTA_TAG, "OTA_ZC: esp_ota_begin failed: %s", esp_err_to_name(err));
+    goto zc_cleanup;
+  }
+
+  ESP_LOGI(OTA_TAG, "OTA_ZC consumer started, waiting for chunks...");
+
+  uint32_t total_written = 0;
+  bool ota_done = false;
+  while (!ota_done) {
+    OTA_ZC_Chunk *chunk = NULL;
+    if (xQueueReceive(OTA_ZC_Queue, &chunk, pdMS_TO_TICKS(30000)) != pdTRUE) {
+      ESP_LOGW(OTA_TAG, "OTA_ZC: queue timeout after %u bytes",
+               (unsigned int)total_written);
+      break;
+    }
+    if (chunk == NULL) continue;
+    if (chunk->ota_staflag != ota_staflag) {
+      ota_zc_pool_release(chunk);
+      continue;
+    }
+    g_ota_zc_stats.processed++;
+    esp_err_t write_err = ESP_FAIL;
+    for (int retry = 0; retry <= OTA_ZC_WRITE_RETRY_MAX; retry++) {
+      write_err = esp_ota_write(ota_handle, chunk->data, (size_t)chunk->len);
+      if (write_err == ESP_OK) break;
+      if (retry < OTA_ZC_WRITE_RETRY_MAX) {
+        g_ota_zc_stats.write_retry++;
+        vTaskDelay(pdMS_TO_TICKS(50));
+      }
+    }
+    if (write_err != ESP_OK) {
+      g_ota_zc_stats.write_fail++;
+      ESP_LOGE(OTA_TAG, "OTA_ZC: write page=%u len=%u failed",
+               (unsigned int)chunk->page_index, chunk->len);
+      ota_zc_pool_release(chunk);
+      break;
+    }
+    total_written += chunk->len;
+    if (chunk->is_last) {
+      ESP_LOGI(OTA_TAG, "OTA_ZC: last chunk, total=%u bytes",
+               (unsigned int)total_written);
+      ota_done = true;
+    }
+    ota_zc_pool_release(chunk);
+  }
+
+  if (ota_done && total_written > 0) {
+    err = esp_ota_end(ota_handle);
+    if (err == ESP_OK) {
+      err = esp_ota_set_boot_partition(update_partition);
+      if (err == ESP_OK) {
+        ESP_LOGI(OTA_TAG, "OTA_ZC complete: %u bytes, restarting...",
+                 (unsigned int)total_written);
+        vTaskDelay(pdMS_TO_TICKS(500));
+        esp_restart();
+      }
+    }
+    if (err != ESP_OK) {
+      ESP_LOGE(OTA_TAG, "OTA_ZC: end/set_boot failed: %s", esp_err_to_name(err));
+    }
+  } else {
+    esp_ota_abort(ota_handle);
+    ESP_LOGE(OTA_TAG, "OTA_ZC: download aborted");
+  }
+
+zc_cleanup:
+  ota_zc_pool_deinit();
+  SysCB.SysEventFlag &= ~OTA_RUNNING;
+}

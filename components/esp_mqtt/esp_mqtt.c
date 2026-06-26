@@ -1,14 +1,16 @@
-/*-------------------------------------------------*/
+﻿/*-------------------------------------------------*/
 /*                                                 */
 /*       ESP-MQTT client integration for OneNET    */
 /*                                                 */
 /*-------------------------------------------------*/
 
 #include "esp_mqtt.h"
+#include "mem_guard.h"
 #include "app_config.h"
+#include "bsp_led.h"
 #include "cJSON.h"
-#include "driver/gpio.h"
 #include "esp_log.h"
+#include "esp_system.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "mqtt_client.h"
@@ -28,11 +30,16 @@
 #endif
 
 static const char *TAG = "ESP_MQTT";
+static const char *OTA_TAG = "OTA_MQTT";
 static esp_mqtt_client_handle_t mqtt_client = NULL;
 static uint32_t disconnect_start_tick = 0;
 static TaskHandle_t ota_notify_task_handle = NULL;
+static TaskHandle_t sub_login_retry_task_handle = NULL;
+static int ota_inform_sub_msg_id = -1;
 
 #define MQTT_DISCONNECT_RESET_TIMEOUT_MS (180000)
+#define SUB_LOGIN_RETRY_DELAY_MS (5000)
+#define OTA_NOTIFY_REBOOT_DELAY_MS (1500)
 
 extern Sys_CB SysCB;
 
@@ -45,16 +52,16 @@ static const char URLdata[8][4] = {"%2B", "%20", "%2F", "%3F",
                                    "%25", "%23", "%26", "%3D"};
 
 static void ota_notify_check_task(void *pvParameters) {
-  ESP_LOGI(TAG, "收到 ota/inform，准备触发 OTA 检查");
+  ESP_LOGI(OTA_TAG, "收到 ota/inform，准备触发 OTA 检查");
   vTaskDelay(pdMS_TO_TICKS(500));
-  Studio_OTA_CheckTask();
+  OneNET_FuseOTA_CheckTask();
   ota_notify_task_handle = NULL;
   vTaskDelete(NULL);
 }
 
-static void mqtt_schedule_ota_check_from_notify(void) {
+static void __attribute__((unused)) mqtt_schedule_ota_check_from_notify(void) {
   if (ota_notify_task_handle != NULL) {
-    ESP_LOGW(TAG, "OTA 通知处理任务已在队列中，忽略重复触发");
+    ESP_LOGW(OTA_TAG, "OTA 通知处理任务已在队列中，忽略重复触发");
     return;
   }
 
@@ -62,19 +69,125 @@ static void mqtt_schedule_ota_check_from_notify(void) {
                               &ota_notify_task_handle);
   if (ok != pdPASS) {
     ota_notify_task_handle = NULL;
-    ESP_LOGE(TAG, "创建 ota_notify 任务失败");
+    ESP_LOGE(OTA_TAG, "创建 ota_notify 任务失败");
+  } else {
+    ESP_LOGI(OTA_TAG, "已调度 OTA 检查任务");
+  }
+}
+
+static void ota_notify_reboot_task(void *pvParameters) {
+  (void)pvParameters;
+
+  ESP_LOGI(OTA_TAG, "收到 ota/inform，准备重启并走统一 OTA 启动流程");
+  WiFi_Cat1_RequestOtaNotifyReboot();
+  vTaskDelay(pdMS_TO_TICKS(OTA_NOTIFY_REBOOT_DELAY_MS));
+  ESP_LOGI(OTA_TAG, "即将重启，启动后统一执行 OTA bootstrap");
+  ota_notify_task_handle = NULL;
+  esp_restart();
+}
+
+static void mqtt_schedule_ota_reboot_from_notify(void) {
+  if (WiFi_Cat1_IsOtaNotifyBootstrapPendingOrActive()) {
+    ESP_LOGW(OTA_TAG, "OTA 重启流程已挂起或正在启动链路中，忽略重复通知");
+    return;
+  }
+
+  if (ota_notify_task_handle != NULL) {
+    ESP_LOGW(OTA_TAG, "OTA 通知重启任务已在队列中，忽略重复触发");
+    return;
+  }
+
+  BaseType_t ok = xTaskCreate(ota_notify_reboot_task, "ota_notify", 4096, NULL,
+                              3, &ota_notify_task_handle);
+  if (ok != pdPASS) {
+    ota_notify_task_handle = NULL;
+    ESP_LOGE(OTA_TAG, "创建 ota_notify 重启任务失败");
+  } else {
+    ESP_LOGI(OTA_TAG, "已调度 OTA 通知重启任务");
+  }
+}
+
+static bool mqtt_reply_code_is_success(cJSON *root) {
+  cJSON *code = cJSON_GetObjectItem(root, "code");
+  int code_value = cJSON_IsNumber(code) ? code->valueint : -1;
+  return code_value == 200 || code_value == 0;
+}
+
+static void sub_login_retry_task(void *pvParameters) {
+  uint32_t delay_ms = (uint32_t)(uintptr_t)pvParameters;
+  while ((SysCB.SysEventFlag & CONNECT_MQTT) &&
+         (SysCB.SysEventFlag & SUB_LORA_CONFIRMED) &&
+         !(SysCB.SysEventFlag & SUB_ONLINE_READY)) {
+    if (delay_ms > 0) {
+      vTaskDelay(pdMS_TO_TICKS(delay_ms));
+    }
+
+    if (!(SysCB.SysEventFlag & CONNECT_MQTT) ||
+        !(SysCB.SysEventFlag & SUB_LORA_CONFIRMED) ||
+        (SysCB.SysEventFlag & SUB_ONLINE_READY)) {
+      break;
+    }
+
+    ESP_LOGW(TAG, "Retrying sub-device login after previous failure");
+    if (WiFi_Cat1_SubOnline(1, 1) == ESP_OK) {
+      break;
+    }
+    ESP_LOGW(TAG, "Sub-device login retry publish failed");
+    delay_ms = SUB_LOGIN_RETRY_DELAY_MS;
+  }
+
+  sub_login_retry_task_handle = NULL;
+  vTaskDelete(NULL);
+}
+
+static void mqtt_schedule_sub_login_retry(uint32_t delay_ms) {
+  if (sub_login_retry_task_handle != NULL) {
+    ESP_LOGW(TAG, "Sub-device login retry already scheduled");
+    return;
+  }
+
+  BaseType_t ok =
+      xTaskCreate(sub_login_retry_task, "sub_login_retry", 4096,
+                  (void *)(uintptr_t)delay_ms, 4, &sub_login_retry_task_handle);
+  if (ok != pdPASS) {
+    sub_login_retry_task_handle = NULL;
+    ESP_LOGE(TAG, "Failed to create sub-device login retry task");
+  }
+}
+
+static void mqtt_try_subdevice_login_now(const char *reason) {
+  if (!(SysCB.SysEventFlag & CONNECT_MQTT)) {
+    return;
+  }
+  if (!(SysCB.SysEventFlag & SUB_LORA_CONFIRMED)) {
+    ESP_LOGI(TAG, "Waiting for LoRa confirmation before sub-device login (%s)",
+             reason);
+    return;
+  }
+  if (SysCB.SysEventFlag & SUB_ONLINE_READY) {
+    ESP_LOGI(TAG, "Sub-device already online, skip redundant login (%s)", reason);
+    return;
+  }
+
+  esp_err_t err = WiFi_Cat1_SubOnline(1, 1);
+  if (err == ESP_OK) {
+    ESP_LOGI(TAG, "Sub-device login sent (%s)", reason);
+  } else {
+    ESP_LOGW(TAG, "Sub-device login publish failed (%s): %s", reason,
+             esp_err_to_name(err));
+    mqtt_schedule_sub_login_retry(SUB_LOGIN_RETRY_DELAY_MS);
   }
 }
 
 static void mqtt_publish_ota_notify_reply(const char *reply_id, int code,
                                           const char *msg) {
   if (mqtt_client == NULL) {
-    ESP_LOGE(TAG, "MQTT 客户端未初始化，无法回发 ota/inform_reply");
+    ESP_LOGE(OTA_TAG, "MQTT 客户端未初始化，无法回发 ota/inform_reply");
     return;
   }
 
   if (!(SysCB.SysEventFlag & CONNECT_MQTT)) {
-    ESP_LOGW(TAG, "MQTT 未连接，跳过 ota/inform_reply 回发");
+    ESP_LOGW(OTA_TAG, "MQTT 未连接，跳过 ota/inform_reply 回发");
     return;
   }
 
@@ -98,7 +211,8 @@ static void mqtt_publish_ota_notify_reply(const char *reply_id, int code,
            GW_DEVICENAME);
   int msg_id =
       esp_mqtt_client_publish(mqtt_client, topic, payload, strlen(payload), 1, 0);
-  ESP_LOGI(TAG, "已发布 ota/inform_reply，msg_id=%d，payload=%s", msg_id, payload);
+  ESP_LOGI(OTA_TAG, "已发布 ota/inform_reply，msg_id=%d，payload=%s", msg_id,
+           payload);
   free(payload);
 }
 
@@ -240,18 +354,27 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base,
   case MQTT_EVENT_CONNECTED:
     ESP_LOGI(TAG, "MQTT 已连接到 OneNET");
     SysCB.SysEventFlag |= CONNECT_MQTT;
+    SysCB.SysEventFlag &= ~SUB_ONLINE_READY;
     disconnect_start_tick = 0;
+    ota_inform_sub_msg_id = -1;
 
+    if (!mem_guard_mqtt_sub_blocked()) {
     for (int i = 0; i < TopicNum; i++) {
       int msg_id = esp_mqtt_client_subscribe(client, TopicBuff[i], 1);
       ESP_LOGD(TAG, "Subscribed topic=%s, msg_id=%d", TopicBuff[i], msg_id);
+      if (i == 8) {
+        ota_inform_sub_msg_id = msg_id;
+        ESP_LOGI(OTA_TAG, "订阅 OTA 通知主题: %s, msg_id=%d", TopicBuff[i], msg_id);
+      }
+    }
+    } else {
+      ESP_LOGE(TAG, "MQTT subscribe blocked: low memory (level %d)", (int)mem_guard_get_level());
     }
 
     if ((SysCB.SysEventFlag & SUB_LORA_CONFIRMED) &&
         !(SysCB.SysEventFlag & SUB_ONLINE_READY)) {
       ESP_LOGI(TAG, "LoRa 已确认连通，开始上报子设备上线");
-      WiFi_Cat1_SubOnline(1, 1);
-      SysCB.SysEventFlag |= SUB_ONLINE_READY;
+      mqtt_try_subdevice_login_now("mqtt connected");
     } else {
       ESP_LOGI(TAG, "等待 LoRa 确认后再上报子设备上线");
     }
@@ -279,6 +402,9 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base,
 
   case MQTT_EVENT_SUBSCRIBED:
     ESP_LOGD(TAG, "MQTT subscribed, msg_id=%d", event->msg_id);
+    if (event->msg_id == ota_inform_sub_msg_id) {
+      ESP_LOGI(OTA_TAG, "OTA 通知主题订阅成功, msg_id=%d", event->msg_id);
+    }
     break;
 
   case MQTT_EVENT_UNSUBSCRIBED:
@@ -301,9 +427,18 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base,
     ESP_LOGD(TAG, "MQTT payload: %.*s", event->data_len, event->data);
 
     if (strstr(topic_tmp, "thing/sub/login/reply")) {
+      ESP_LOGI(TAG, "sub-device login reply payload: %.*s", event->data_len,
+               event->data);
       cJSON *root = cJSON_ParseWithLength(event->data, event->data_len);
       if (root != NULL) {
-        mqtt_log_reply_code("sub-device login", root);
+        if (mqtt_reply_code_is_success(root)) {
+          SysCB.SysEventFlag |= SUB_ONLINE_READY;
+          ESP_LOGI(TAG, "sub-device login success, marked online");
+        } else {
+          SysCB.SysEventFlag &= ~SUB_ONLINE_READY;
+          mqtt_log_reply_code("sub-device login", root);
+          mqtt_schedule_sub_login_retry(SUB_LOGIN_RETRY_DELAY_MS);
+        }
         cJSON_Delete(root);
       }
     }
@@ -346,7 +481,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base,
       snprintf(reply_id, sizeof(reply_id), "%lu",
                (unsigned long)xTaskGetTickCount());
 
-      ESP_LOGI(TAG, "收到 ota/inform 原始载荷: %.*s", event->data_len,
+      ESP_LOGI(OTA_TAG, "收到 ota/inform 原始载荷: %.*s", event->data_len,
                event->data);
       cJSON *root = cJSON_ParseWithLength(event->data, event->data_len);
       if (root != NULL) {
@@ -357,11 +492,11 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base,
         }
         cJSON_Delete(root);
       } else {
-        ESP_LOGW(TAG, "ota/inform 载荷不是合法的 JSON，继续按默认 id 回包");
+        ESP_LOGW(OTA_TAG, "ota/inform 载荷不是合法的 JSON，继续按默认 id 回包");
       }
 
       mqtt_publish_ota_notify_reply(reply_id, 200, "success");
-      mqtt_schedule_ota_check_from_notify();
+      mqtt_schedule_ota_reboot_from_notify();
     }
 
     if (strstr(topic_tmp, "thing/property/set") ||
@@ -385,7 +520,11 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base,
                                      &ok);
           if (ok) {
             ESP_LOGI(TAG, "Set gateway PestAlarm=%d", pest_value);
-            gpio_set_level(LED_GW001_LED_PIN, pest_value ? 0 : 1);
+            esp_err_t led_err = bsp_led_set(pest_value != 0);
+            if (led_err != ESP_OK) {
+              ESP_LOGE(TAG, "Failed to set onboard RGB: %s",
+                       esp_err_to_name(led_err));
+            }
             mqtt_publish_property_state(reply_id, ATTRIBUTE1, pest_value);
           }
 

@@ -1,0 +1,89 @@
+<mxfile host="app.diagrams.net" version="24.7.17">
+  <diagram name="4.4 LoRa 通信与子节点管理设计" id="page-102">
+    <mxGraphModel dx="1600" dy="1220" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="1220" math="0" shadow="0">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+        <mxCell id="v-79" value="LoRa_Init()&lt;div&gt;115200 / 9600 探测 + AT+DEFAULT + 透明传输模式&lt;/div&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#000000;fontColor=#000000;fontSize=22;fontStyle=1;align=center;verticalAlign=middle;spacing=10;strokeWidth=2;" vertex="1" parent="1">
+          <mxGeometry x="470" y="26" width="660" height="92" as="geometry"/>
+        </mxCell>
+        <mxCell id="v-80" value="LoRa_QueryNodeOnline()&lt;div&gt;定时发送在线查询帧&lt;/div&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#000000;fontColor=#000000;fontSize=20;align=center;verticalAlign=middle;spacing=10;strokeWidth=2;" vertex="1" parent="1">
+          <mxGeometry x="535" y="162" width="530" height="86" as="geometry"/>
+        </mxCell>
+        <mxCell id="v-81" value="LoRa_ActiveEvent()&lt;div&gt;读取 UART 原始数据并写入 staging 缓冲&lt;/div&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#000000;fontColor=#000000;fontSize=20;align=center;verticalAlign=middle;spacing=10;strokeWidth=2;" vertex="1" parent="1">
+          <mxGeometry x="490" y="290" width="620" height="88" as="geometry"/>
+        </mxCell>
+        <mxCell id="v-82" value="查找帧头 AA55 + 检查长度" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#000000;fontColor=#000000;fontSize=20;align=center;verticalAlign=middle;spacing=10;strokeWidth=2;" vertex="1" parent="1">
+          <mxGeometry x="560" y="416" width="480" height="74" as="geometry"/>
+        </mxCell>
+        <mxCell id="v-83" value="CRC8-Maxim 校验" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#000000;fontColor=#000000;fontSize=20;align=center;verticalAlign=middle;spacing=10;strokeWidth=2;" vertex="1" parent="1">
+          <mxGeometry x="610" y="524" width="380" height="74" as="geometry"/>
+        </mxCell>
+        <mxCell id="v-84" value="命令类型？" style="rhombus;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#000000;fontColor=#000000;fontSize=20;fontStyle=1;align=center;verticalAlign=middle;spacing=10;strokeWidth=2;" vertex="1" parent="1">
+          <mxGeometry x="665" y="640" width="270" height="118" as="geometry"/>
+        </mxCell>
+        <mxCell id="v-85" value="CMD_QUERY&lt;div&gt;确认子节点在线&lt;/div&gt;&lt;div&gt;置位 SUB_LORA_CONFIRMED&lt;/div&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#000000;fontColor=#000000;fontSize=20;align=center;verticalAlign=middle;spacing=10;strokeWidth=2;" vertex="1" parent="1">
+          <mxGeometry x="90" y="830" width="330" height="116" as="geometry"/>
+        </mxCell>
+        <mxCell id="v-86" value="CMD_REPORT&lt;div&gt;解析光照 / 温度 / 湿度&lt;/div&gt;&lt;div&gt;缓存 last_node_data 并置位 SUB_NODE_DATA_READY&lt;/div&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#000000;fontColor=#000000;fontSize=22;fontStyle=1;align=center;verticalAlign=middle;spacing=10;strokeWidth=2;" vertex="1" parent="1">
+          <mxGeometry x="560" y="814" width="480" height="132" as="geometry"/>
+        </mxCell>
+        <mxCell id="v-87" value="CMD_CONTROL&lt;div&gt;接收节点 LED 控制响应&lt;/div&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#000000;fontColor=#000000;fontSize=20;align=center;verticalAlign=middle;spacing=10;strokeWidth=2;" vertex="1" parent="1">
+          <mxGeometry x="1160" y="830" width="340" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="v-88" value="平台下发 PowerSwitch_2&lt;div&gt;LoRa_ControlNodeLED() 转发到子节点&lt;/div&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#000000;fontColor=#000000;fontSize=18;align=center;verticalAlign=middle;spacing=10;strokeWidth=2;dashed=1;" vertex="1" parent="1">
+          <mxGeometry x="1160" y="660" width="340" height="90" as="geometry"/>
+        </mxCell>
+        <mxCell id="v-89" value="若 MQTT 已连接&lt;div&gt;调用 WiFi_Cat1_SubOnline() 上报子设备上线&lt;/div&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#000000;fontColor=#000000;fontSize=18;align=center;verticalAlign=middle;spacing=10;strokeWidth=2;dashed=1;" vertex="1" parent="1">
+          <mxGeometry x="70" y="996" width="370" height="86" as="geometry"/>
+        </mxCell>
+        <mxCell id="v-90" value="25s 内没有有效协议帧&lt;div&gt;清除 SUB_LORA_CONFIRMED / SUB_NODE_DATA_READY&lt;/div&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#000000;fontColor=#000000;fontSize=18;align=center;verticalAlign=middle;spacing=10;strokeWidth=2;dashed=1;" vertex="1" parent="1">
+          <mxGeometry x="465" y="1010" width="670" height="84" as="geometry"/>
+        </mxCell>
+        <mxCell id="e-91" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#000000;strokeWidth=2;endArrow=block;endFill=1;exitY=1;entryY=0;" edge="1" parent="1" source="v-79" target="v-80">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e-92" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#000000;strokeWidth=2;endArrow=block;endFill=1;exitY=1;entryY=0;" edge="1" parent="1" source="v-80" target="v-81">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e-93" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#000000;strokeWidth=2;endArrow=block;endFill=1;exitY=1;entryY=0;" edge="1" parent="1" source="v-81" target="v-82">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e-94" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#000000;strokeWidth=2;endArrow=block;endFill=1;exitY=1;entryY=0;" edge="1" parent="1" source="v-82" target="v-83">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e-95" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#000000;strokeWidth=2;endArrow=block;endFill=1;exitY=1;entryY=0;" edge="1" parent="1" source="v-83" target="v-84">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e-96" value="QUERY" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#000000;strokeWidth=2;endArrow=block;endFill=1;fontSize=18;labelBackgroundColor=#FFFFFF;exitX=0.15;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="v-84" target="v-85">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="706" y="790"/>
+              <mxPoint x="255" y="790"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e-97" value="REPORT" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#000000;strokeWidth=2;endArrow=block;endFill=1;fontSize=18;labelBackgroundColor=#FFFFFF;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="v-84" target="v-86">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e-98" value="CONTROL" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#000000;strokeWidth=2;endArrow=block;endFill=1;fontSize=18;labelBackgroundColor=#FFFFFF;exitX=0.85;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="v-84" target="v-87">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="895" y="790"/>
+              <mxPoint x="1330" y="790"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e-99" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#000000;strokeWidth=2;endArrow=block;endFill=1;exitY=1;entryY=0;" edge="1" parent="1" source="v-85" target="v-89">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e-100" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#000000;strokeWidth=2;endArrow=block;endFill=1;exitX=0.5;exitY=1;entryX=0.5;entryY=0;dashed=1;strokeColor=#000000;" edge="1" parent="1" source="v-88" target="v-87">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e-101" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#000000;strokeWidth=2;endArrow=block;endFill=1;exitX=0.5;exitY=1;entryX=0.5;entryY=0;dashed=1;endArrow=none;strokeColor=#000000;" edge="1" parent="1" source="v-86" target="v-90">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

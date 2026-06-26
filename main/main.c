@@ -1,10 +1,13 @@
 ﻿#include "app_config.h"
+#include "mem_guard.h"
 #include "bsp_led.h"
 #include "bsp_storage.h"
 #include "bsp_uart.h"
 #include "driver/gpio.h"
 #include "esp_log.h"
+#include "esp_heap_caps.h"
 #include "esp_mqtt.h"
+#include "esp_system.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "mw1268_app.h"
@@ -38,8 +41,47 @@ static void ota_bootstrap_task(void *pvParameters);
 static void start_boot_saved_wifi_ap_fallback(void);
 static void unified_sensor_upload_task(void *pvParameters);
 static void lora_poll_task(void *pvParameters);
+static void heap_monitor_task(void *pvParameters);
 void WiFi_Cat1_ReportBootOtaResult(void);
 
+
+/* Heap monitor - periodically logs DRAM / SPIRAM usage and stack high watermarks */
+__attribute__((unused)) static void heap_monitor_task(void *pvParameters) {
+  (void)pvParameters;
+
+  /* External task handles used in watermark reporting */
+  extern TaskHandle_t mqtt_start_task_handle;
+  extern TaskHandle_t ota_bootstrap_task_handle;
+
+  while (1) {
+    /* Suppress logging when memory guard says so */
+    if (!mem_guard_log_suppressed()) {
+      uint32_t free_internal = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+      uint32_t min_free_internal =
+          heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL);
+      uint32_t free_spiram = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+      uint32_t min_free_spiram =
+          heap_caps_get_minimum_free_size(MALLOC_CAP_SPIRAM);
+
+      ESP_LOGI("HEAP",
+               "DRAM free=%" PRIu32 " min=%" PRIu32 " | "
+               "SPIRAM free=%" PRIu32 " min=%" PRIu32,
+               free_internal, min_free_internal, free_spiram, min_free_spiram);
+
+      /* Stack high watermarks for key tasks (printed only when handles exist) */
+      if (mqtt_start_task_handle)
+        ESP_LOGI("HEAP", "mqtt_start stack HWM=%u",
+                 (unsigned int)uxTaskGetStackHighWaterMark(
+                     mqtt_start_task_handle));
+      if (ota_bootstrap_task_handle)
+        ESP_LOGI("HEAP", "ota_boot   stack HWM=%u",
+                 (unsigned int)uxTaskGetStackHighWaterMark(
+                     ota_bootstrap_task_handle));
+    }
+
+    vTaskDelay(pdMS_TO_TICKS(60000));
+  }
+}
 static void app_configure_log_levels(void) {
   esp_log_level_set("*", ESP_LOG_WARN);
 
@@ -71,7 +113,7 @@ static void app_configure_log_levels(void) {
 
 static void mqtt_start_task(void *pvParameters) {
   vTaskDelay(pdMS_TO_TICKS(1000));
-  ESP_LOGI("MAIN", "WiFi 已就绪，开始启动 MQTT");
+  ESP_LOGI("MAIN", "WiFi connected, starting MQTT init");
   esp_mqtt_app_start(NULL);
   mqtt_start_task_handle = NULL;
   vTaskDelete(NULL);
@@ -82,7 +124,7 @@ static void ota_bootstrap_task(void *pvParameters) {
   const TickType_t wait_timeout = pdMS_TO_TICKS(30000);
   TickType_t waited = 0;
 
-  ESP_LOGI("MAIN", "启动后 OTA 检查任务已启动");
+  ESP_LOGI("MAIN", "Starting OTA bootstrap task");
   ESP_LOGI("MAIN", "ota_boot stack watermark=%u",
            (unsigned int)uxTaskGetStackHighWaterMark(NULL));
 
@@ -95,15 +137,25 @@ static void ota_bootstrap_task(void *pvParameters) {
   if ((SysCB.SysEventFlag & CONNECT_MQTT) && !gateway_fw_reported) {
     WiFi_Cat1_PropertyVersion(0);
     gateway_fw_reported = true;
-    vTaskDelay(pdMS_TO_TICKS(1500));
+    vTaskDelay(pdMS_TO_TICKS(5000));
   }
 
-  if (SysCB.SysEventFlag & CONNECT_MQTT) {
-    WiFi_Cat1_ReportBootOtaResult();
+  while ((SysCB.SysEventFlag & CONNECT_WIFI) &&
+         (SysCB.SysEventFlag & CONNECT_MQTT) &&
+         !(SysCB.SysEventFlag & CONNECT_PING) && waited < 120000) {
+    vTaskDelay(pdMS_TO_TICKS(3000));
+    waited += 3000;
   }
 
-  if ((SysCB.SysEventFlag & CONNECT_WIFI) && !(SysCB.SysEventFlag & OTA_RUNNING)) {
-    OneNET_FuseOTA_CheckTask();
+  if ((SysCB.SysEventFlag & CONNECT_MQTT)) {
+    ESP_LOGI("MAIN", "Running OTA check...");
+    WiFi_Cat1_CheckOTATask(0);
+  }
+
+  if (!boot_saved_wifi_pending || boot_saved_wifi_ap_started) {
+    ESP_LOGI("MAIN", "OTA bootstrap completed");
+  } else if (mqtt_start_task_handle != NULL) {
+    ESP_LOGW("MAIN", "MQTT not ready after OTA bootstrap, will retry");
   }
 
   ota_bootstrap_task_handle = NULL;
@@ -111,89 +163,60 @@ static void ota_bootstrap_task(void *pvParameters) {
 }
 
 static void start_boot_saved_wifi_ap_fallback(void) {
-  if (!boot_saved_wifi_pending || boot_saved_wifi_ap_started) {
-    return;
+  if (boot_saved_wifi_pending) {
+    boot_saved_wifi_ap_started = true;
+    boot_saved_wifi_pending = false;
+    ESP_LOGI("MAIN", "Boot saved WiFi failed, starting AP provision");
+    wifi_manager_start_ap_provisioning("ESP32_Config", "12345678");
   }
-
-  boot_saved_wifi_pending = false;
-  boot_saved_wifi_ap_started = true;
-
-  ESP_LOGW("MAIN", "历史 WiFi 连接失败，切换到 AP 配网模式");
-  wifi_manager_cancel_connect_retry();
-  esp_err_t err =
-      wifi_manager_start_ap_provisioning("ESP32_Config", "12345678");
-  if (err != ESP_OK) {
-    ESP_LOGE("MAIN", "启动 AP 配网失败: %s",
-             esp_err_to_name(err));
-  }
-}
-
-void cat1_delayed_start_task(void *pvParameters) {
-  ESP_LOGI("MAIN", "CAT1 备用链路监测任务已启动");
-  vTaskDelay(pdMS_TO_TICKS(120000));
-
-  if (SysCB.SysEventFlag & CONNECT_WIFI) {
-    ESP_LOGI("MAIN", "WiFi 已连接，保持 CAT1 关机");
-  } else {
-    ESP_LOGW("MAIN", "WiFi 不可用，启用 CAT1 备用链路");
-    if (Cat1_AT_Init() == ESP_OK) {
-      Cat1_Reset();
-      xTaskCreate(start_Cat1Task, "cat1_task", 4096, NULL, 4, NULL);
-      xTaskCreate(Cat1_AT_Mqtt_Task, "at_mqtt_task", 8192, NULL, 4, NULL);
-    } else {
-      ESP_LOGE("MAIN", "初始化 CAT1 模块失败");
-    }
-  }
-
-  vTaskDelete(NULL);
 }
 
 static void unified_sensor_upload_task(void *pvParameters) {
-  soil_sensor_data_t soil_data;
-
+  (void)pvParameters;
   vTaskDelay(pdMS_TO_TICKS(10000));
 
   while (1) {
-    if (SysCB.SysEventFlag & OTA_RUNNING) {
+    if (!(SysCB.SysEventFlag & CONNECT_MQTT)) {
       vTaskDelay(pdMS_TO_TICKS(5000));
       continue;
     }
 
-    if (SysCB.SysEventFlag & CONNECT_MQTT) {
-      if (!gateway_fw_reported) {
-        WiFi_Cat1_PropertyVersion(0);
-        gateway_fw_reported = true;
-        vTaskDelay(pdMS_TO_TICKS(1000));
-      }
+    iic_sensor_data_t iic_data;
+    soil_sensor_data_t soil_data;
+    bool have_iic = (iic_sensor_get_data(&iic_data) == ESP_OK);
+    bool have_soil = (soil_sensor_read_data(&soil_data) == ESP_OK);
 
-      ESP_LOGI("UPLOAD", "开始上传网关空气数据");
-      WiFi_Cat1_GatewayDataPost(25.5f, 60.0f, 150.0f);
-      vTaskDelay(pdMS_TO_TICKS(2000));
-
-      if (soil_sensor_read_data(&soil_data) == ESP_OK) {
-        ESP_LOGI("UPLOAD", "开始上传网关土壤数据");
-        WiFi_Cat1_SoilDataPost(soil_data.temperature, soil_data.humidity,
-                               soil_data.ec, soil_data.nitrogen,
-                               soil_data.phosphorus, soil_data.potassium);
-      } else {
-        ESP_LOGW("UPLOAD", "土壤传感器读取失败，跳过土壤数据上传");
-      }
-      vTaskDelay(pdMS_TO_TICKS(2000));
-
-      if (SysCB.last_node_data.lightlux > 0) {
-        ESP_LOGI("UPLOAD", "开始上传子节点缓存数据");
-        WiFi_Cat1_NodeDataPost(SysCB.last_node_data.temperature,
-                               SysCB.last_node_data.humidity,
-                               SysCB.last_node_data.lightlux);
-      } else {
-        ESP_LOGW("UPLOAD", "子节点缓存为空，跳过子节点数据上传");
-      }
+    if (have_iic && have_soil) {
+      WiFi_Cat1_AllDataPost(
+          iic_data.temperature, iic_data.humidity, iic_data.lux,
+          soil_data.temperature, soil_data.humidity, soil_data.ec,
+          soil_data.nitrogen, soil_data.phosphorus, soil_data.potassium,
+          0.0f, 0.0f, 0.0f);
+    } else if (have_iic) {
+      WiFi_Cat1_GatewayDataPost(iic_data.temperature, iic_data.humidity,
+                                iic_data.lux);
+    } else if (have_soil) {
+      WiFi_Cat1_SoilDataPost(soil_data.temperature, soil_data.humidity,
+                             soil_data.ec, soil_data.nitrogen,
+                             soil_data.phosphorus, soil_data.potassium);
     } else {
-      gateway_fw_reported = false;
+      ESP_LOGW("UPLOAD", "No sensor data available for upload");
     }
 
-    vTaskDelay(pdMS_TO_TICKS(30000));
+    if ((SysCB.SysEventFlag & SUB_NODE_DATA_READY)) {
+      node_sensor_data_t *nd = &SysCB.last_node_data;
+      WiFi_Cat1_NodeDataPost(nd->temperature, nd->humidity, nd->lightlux);
+    }
+
+    vTaskDelay(pdMS_TO_TICKS(60000));
   }
+}
+
+static void cat1_delayed_start_task(void *pvParameters) {
+  (void)pvParameters;
+  vTaskDelay(pdMS_TO_TICKS(60000));
+  start_Cat1Task(NULL);
+  vTaskDelete(NULL);
 }
 
 static void lora_poll_task(void *pvParameters) {
@@ -201,7 +224,7 @@ static void lora_poll_task(void *pvParameters) {
   uint32_t last_query_send = 0;
   uint32_t lora_retry_count = 0;
 
-  ESP_LOGI("LORA_TASK", "LoRa 轮询任务已启动");
+  ESP_LOGI("LORA_TASK", "LoRa polling task started");
   vTaskDelay(pdMS_TO_TICKS(2000));
   LoRa_QueryNodeOnline();
   last_query_send = xTaskGetTickCount();
@@ -215,7 +238,7 @@ static void lora_poll_task(void *pvParameters) {
       ++lora_retry_count;
       if (lora_retry_count == 1 || (lora_retry_count % 6U) == 0U) {
         ESP_LOGW("LORA_TASK",
-                 "LoRa 子节点暂未响应，继续重试在线查询（第 %lu 次）",
+                 "LoRa sub-node not responding, retry query (%lu)",
                  (unsigned long)lora_retry_count);
       }
       LoRa_QueryNodeOnline();
@@ -238,17 +261,17 @@ void wifi_state_callback(wifi_state_t state) {
     boot_saved_wifi_pending = false;
     gateway_fw_reported = false;
 
-    if (mqtt_start_task_handle == NULL) {
+    if (mqtt_start_task_handle == NULL && !mem_guard_level_at_least(MEM_LEVEL_CRITICAL)) {
       xTaskCreate(mqtt_start_task, "mqtt_start", 4096, NULL, 5,
                   &mqtt_start_task_handle);
     }
-    if (ota_bootstrap_task_handle == NULL) {
+    if (ota_bootstrap_task_handle == NULL && !mem_guard_level_at_least(MEM_LEVEL_CRITICAL)) {
       xTaskCreate(ota_bootstrap_task, "ota_boot", 12288, NULL, 5,
                   &ota_bootstrap_task_handle);
     }
   } else if (state == WIFI_STATE_DISCONNECTED) {
     gateway_fw_reported = false;
-    ESP_LOGW("MAIN", "WiFi 已断开");
+    ESP_LOGW("MAIN", "WiFi disconnected");
     start_boot_saved_wifi_ap_fallback();
   }
 }
@@ -269,11 +292,17 @@ static void lvgl_task(void *pvParameters) {
 
   iic_sensor_data_t iic_data;
   soil_sensor_data_t soil_data;
-  bool have_iic = false;
-  bool have_soil = false;
+  bool have_iic;
+  bool have_soil;
   uint32_t tick = 0;
 
   while (1) {
+    /* Degradation: pause LVGL refresh when memory is critically low */
+    if (mem_guard_lvgl_paused()) {
+      vTaskDelay(pdMS_TO_TICKS(500));
+      continue;
+    }
+
     lv_timer_handler();
 
     /* Refresh sensor readings every ~1 s (every 60 LVGL ticks at 16 ms) */
@@ -311,7 +340,7 @@ static void lvgl_task(void *pvParameters) {
 }
 void app_main(void) {
   app_configure_log_levels();
-  ESP_LOGI("FIRMWARE", "当前固件版本: %s",
+  ESP_LOGI("FIRMWARE", "Current firmware version: %s",
            WiFi_Cat1_GetRuntimeFirmwareVersion());
 
   ESP_ERROR_CHECK(EEprom_Init());
@@ -338,23 +367,23 @@ void app_main(void) {
 
   WiFi_Cat1_InitGPIO();
   CAT1_POWER(0);
-  ESP_LOGI("MAIN", "系统启动：优先使用 WiFi，保持 CAT1 关机");
+  ESP_LOGI("MAIN", "System startup complete, WiFi priority, CAT1 off");
 
   bsp_led_init();
   wifi_manager_init();
   wifi_set_state_callback(wifi_state_callback);
 
   wifi_credentials_t saved_wifi = {0};
-  ESP_LOGI("MAIN", "正在加载历史 WiFi 配置");
+  ESP_LOGI("MAIN", "Loading saved WiFi config");
   if (wifi_manager_load_saved_config(&saved_wifi)) {
-    ESP_LOGI("MAIN", "使用历史 WiFi 连接: %s", saved_wifi.ssid);
+    ESP_LOGI("MAIN", "Using saved WiFi config: %s", saved_wifi.ssid);
     boot_saved_wifi_pending = true;
     boot_saved_wifi_ap_started = false;
     wifi_manager_connect(saved_wifi.ssid, saved_wifi.password);
   } else {
     boot_saved_wifi_pending = false;
     boot_saved_wifi_ap_started = true;
-    ESP_LOGI("MAIN", "未找到历史 WiFi，启动 AP 配网");
+    ESP_LOGI("MAIN", "No saved WiFi config, starting AP provision");
     wifi_manager_start_ap_provisioning("ESP32_Config", "12345678");
   }
 
@@ -374,6 +403,10 @@ void app_main(void) {
   ESP_LOGI("MAIN", "LVGL sensor dashboard started");
 
   xTaskCreate(lvgl_task, "lvgl", 20480, NULL, 3, NULL);
+
+  /* Initialise memory guard after all subsystems are up */
+  mem_guard_init();
+
   LoRa_Init();
   xTaskCreate(lora_poll_task, "lora_poll_task", 4096, NULL, 6, NULL);
 

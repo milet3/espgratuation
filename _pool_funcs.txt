@@ -1,0 +1,60 @@
+﻿void ota_zc_pool_deinit(void)
+{
+  if (!g_ota_zc_pool.initialized) return;
+  if (g_ota_zc_pool.mutex) {
+    xSemaphoreTake(g_ota_zc_pool.mutex, portMAX_DELAY);
+  }
+  for (int i = 0; i < OTA_ZC_POOL_SIZE; i++) {
+    if (g_ota_zc_pool.chunks[i]) {
+      free(g_ota_zc_pool.chunks[i]);
+      g_ota_zc_pool.chunks[i] = NULL;
+    }
+  }
+  g_ota_zc_pool.free_count = 0;
+  g_ota_zc_pool.initialized = false;
+  if (g_ota_zc_pool.mutex) {
+    xSemaphoreGive(g_ota_zc_pool.mutex);
+    vSemaphoreDelete(g_ota_zc_pool.mutex);
+    g_ota_zc_pool.mutex = NULL;
+  }
+  ESP_LOGI(OTA_TAG, "ota_zc_pool deinit");
+}
+
+OTA_ZC_Chunk *ota_zc_pool_acquire(uint16_t datalen)
+{
+  if (!g_ota_zc_pool.initialized || datalen > OTA_ZC_CHUNK_DATA_MAX) {
+    return NULL;
+  }
+  OTA_ZC_Chunk *chunk = NULL;
+  if (g_ota_zc_pool.mutex) {
+    xSemaphoreTake(g_ota_zc_pool.mutex, pdMS_TO_TICKS(500));
+  }
+  if (g_ota_zc_pool.free_count > 0) {
+    int idx = g_ota_zc_pool.free_stack[--g_ota_zc_pool.free_count];
+    chunk = g_ota_zc_pool.chunks[idx];
+    chunk->len = datalen;
+  }
+  if (g_ota_zc_pool.mutex) {
+    xSemaphoreGive(g_ota_zc_pool.mutex);
+  }
+  return chunk;
+}
+
+void ota_zc_pool_release(OTA_ZC_Chunk *chunk)
+{
+  if (!g_ota_zc_pool.initialized || chunk == NULL) return;
+  if (g_ota_zc_pool.mutex) {
+    xSemaphoreTake(g_ota_zc_pool.mutex, pdMS_TO_TICKS(500));
+  }
+  for (int i = 0; i < OTA_ZC_POOL_SIZE; i++) {
+    if (g_ota_zc_pool.chunks[i] == chunk) {
+      if (g_ota_zc_pool.free_count < OTA_ZC_POOL_SIZE) {
+        g_ota_zc_pool.free_stack[g_ota_zc_pool.free_count++] = i;
+      }
+      break;
+    }
+  }
+  if (g_ota_zc_pool.mutex) {
+    xSemaphoreGive(g_ota_zc_pool.mutex);
+  }
+}

@@ -16,7 +16,7 @@ typedef enum { LORA_RX_STA = 0, LORA_TX_STA, LORA_CFG_STA } _LORA_DEVICE_STA;
 /**
  * @brief  LoRa 初始化 (配置为网关接收模式，使用出厂默认参数)
  */
-void LoRa_Init(void);
+esp_err_t LoRa_Init(void);
 
 /**
  * @brief  LoRa 数据发送
@@ -24,7 +24,7 @@ void LoRa_Init(void);
  * @param  len  数据长度
  * @return 0 成功
  */
-uint8_t LoRa_SendData(uint8_t *data, uint16_t len);
+uint8_t LoRa_SendData(const uint8_t *data, uint16_t len);
 
 /**
  * @brief  LoRa 主动事件处理 (接收子节点数据)

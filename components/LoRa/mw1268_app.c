@@ -6,43 +6,62 @@
 #include "freertos/task.h"
 #include "mw1268_uart.h"
 #include "wifi_cat1.h"
+
+#include <stdbool.h>
 #include <string.h>
 
 static const char *TAG = "LORA_APP";
 extern Sys_CB SysCB;
 
-/* 协议常量定义 */
-#define FRAME_HEADER_H 0xAA
-#define FRAME_HEADER_L 0x55
-#define CMD_REPORT 0x01  // 传感器数据上报
-#define CMD_QUERY 0x02   // 主动询问节点在线状态
-#define CMD_CONTROL 0x03 // 控制节点外设 (如 LED)
+#define FRAME_HEADER_H 0xAAU
+#define FRAME_HEADER_L 0x55U
+#define CMD_REPORT 0x01U
+#define CMD_QUERY 0x02U
+#define CMD_CONTROL 0x03U
 
-/* 设备状态 */
+#define LORA_MIN_FRAME_LEN 5U
+#define LORA_MAX_PAYLOAD_LEN UINT8_MAX
+#define LORA_MAX_FRAME_LEN (LORA_MIN_FRAME_LEN + LORA_MAX_PAYLOAD_LEN)
+#define LORA_RX_STAGING_SIZE 512U
+#define NODE_REPORT_PAYLOAD_LEN 6U
+#define NODE_OFFLINE_TIMEOUT_MS 25000U
+
 static _LORA_DEVICE_STA lora_device_sta = LORA_RX_STA;
+static uint8_t lora_rx_staging[LORA_RX_STAGING_SIZE];
+static size_t lora_rx_staging_len = 0U;
+static TickType_t lora_last_valid_frame_tick = 0;
+static bool lora_initialized = false;
 
-/**
- * @brief  CRC8 校验算法 (与子设备一致)
- * 参数：Initial: 0x00, Poly: 0x31 (x8 + x5 + x4 + 1)
- */
-static uint8_t Get_CRC8(uint8_t *ptr, uint16_t len) {
+static uint8_t lora_crc8_maxim(const uint8_t *data, uint16_t len) {
   uint8_t crc = 0x00;
+
   while (len--) {
-    crc ^= *ptr++;
-    for (uint8_t i = 0; i < 8; i++) {
-      if (crc & 0x80) {
-        crc = (crc << 1) ^ 0x31;
+    crc ^= *data++;
+    for (uint8_t bit = 0; bit < 8U; ++bit) {
+      if ((crc & 0x80U) != 0U) {
+        crc = (uint8_t)((crc << 1U) ^ 0x31U);
       } else {
-        crc <<= 1;
+        crc <<= 1U;
       }
     }
   }
+
   return crc;
 }
 
-/**
- * @brief  模块引脚初始化
- */
+static const char *lora_cmd_to_string(uint8_t cmd) {
+  switch (cmd) {
+  case CMD_REPORT:
+    return "sensor report";
+  case CMD_QUERY:
+    return "status response";
+  case CMD_CONTROL:
+    return "control response";
+  default:
+    return "unknown";
+  }
+}
+
 static void lora_gpio_init(void) {
   gpio_config_t io_conf = {
       .intr_type = GPIO_INTR_DISABLE,
@@ -59,202 +78,323 @@ static void lora_gpio_init(void) {
   gpio_config(&io_conf);
 }
 
-/**
- * @brief  LoRa 初始化
- */
-void LoRa_Init(void) {
-  ESP_LOGI(TAG,
-           "Starting LoRa MW1268 Initialization (User Factory Reset Logic)...");
+static void lora_drop_staging_bytes(size_t drop_len) {
+  if (drop_len == 0U || lora_rx_staging_len == 0U) {
+    return;
+  }
 
-  // 1. 临时降低全局日志等级
+  if (drop_len >= lora_rx_staging_len) {
+    lora_rx_staging_len = 0U;
+    return;
+  }
+
+  memmove(lora_rx_staging, lora_rx_staging + drop_len,
+          lora_rx_staging_len - drop_len);
+  lora_rx_staging_len -= drop_len;
+}
+
+static void lora_try_report_subdevice_online(const char *reason) {
+  if ((SysCB.SysEventFlag & CONNECT_MQTT) == 0U) {
+    return;
+  }
+  if ((SysCB.SysEventFlag & SUB_ONLINE_READY) != 0U) {
+    return;
+  }
+
+  ESP_LOGI(TAG, "MQTT ready, reporting sub-device online after %s", reason);
+  WiFi_Cat1_SubOnline(1, 1);
+}
+
+static void lora_mark_link_alive(const char *reason) {
+  bool was_confirmed = (SysCB.SysEventFlag & SUB_LORA_CONFIRMED) != 0U;
+
+  lora_last_valid_frame_tick = xTaskGetTickCount();
+  if (!was_confirmed) {
+    SysCB.SysEventFlag |= SUB_LORA_CONFIRMED;
+    ESP_LOGI(TAG, "LoRa link confirmed by %s", reason);
+    lora_try_report_subdevice_online(reason);
+  }
+}
+
+static void lora_check_link_timeout(void) {
+  if ((SysCB.SysEventFlag & SUB_LORA_CONFIRMED) == 0U ||
+      lora_last_valid_frame_tick == 0) {
+    return;
+  }
+
+  uint32_t silent_ms =
+      (uint32_t)((xTaskGetTickCount() - lora_last_valid_frame_tick) *
+                 portTICK_PERIOD_MS);
+  if (silent_ms < NODE_OFFLINE_TIMEOUT_MS) {
+    return;
+  }
+
+  SysCB.SysEventFlag &= ~(SUB_LORA_CONFIRMED | SUB_NODE_DATA_READY);
+  ESP_LOGW(TAG,
+           "LoRa node timed out after %lu ms without a valid protocol frame",
+           (unsigned long)silent_ms);
+}
+
+static esp_err_t lora_send_frame(uint8_t cmd, const uint8_t *data,
+                                 uint8_t data_len) {
+  uint8_t frame[LORA_MAX_FRAME_LEN];
+  uint16_t frame_len = (uint16_t)(LORA_MIN_FRAME_LEN + data_len);
+
+  if (data_len > 0U && data == NULL) {
+    return ESP_ERR_INVALID_ARG;
+  }
+
+  frame[0] = FRAME_HEADER_H;
+  frame[1] = FRAME_HEADER_L;
+  frame[2] = cmd;
+  frame[3] = data_len;
+
+  if (data_len > 0U) {
+    memcpy(&frame[4], data, data_len);
+  }
+
+  frame[4U + data_len] = lora_crc8_maxim(&frame[2], (uint16_t)(data_len + 2U));
+  return LoRa_SendData(frame, frame_len) == 0 ? ESP_OK : ESP_FAIL;
+}
+
+static void lora_handle_report_frame(const uint8_t *payload, uint8_t data_len) {
+  if (data_len != NODE_REPORT_PAYLOAD_LEN) {
+    ESP_LOGW(TAG, "Unexpected sensor report length: %u", data_len);
+    return;
+  }
+
+  uint16_t lux_val = (uint16_t)((payload[0] << 8) | payload[1]);
+  int16_t temp_raw = (int16_t)((payload[2] << 8) | payload[3]);
+  uint16_t humi_raw = (uint16_t)((payload[4] << 8) | payload[5]);
+
+  SysCB.last_node_data.lightlux = (float)lux_val;
+  SysCB.last_node_data.temperature = (float)temp_raw / 10.0f;
+  SysCB.last_node_data.humidity = (float)humi_raw / 10.0f;
+  SysCB.SysEventFlag |= SUB_NODE_DATA_READY;
+  lora_mark_link_alive("sensor report");
+
+  ESP_LOGI(TAG, "Node report: lux=%u lx temp=%.1f C humi=%.1f %%",
+           (unsigned int)lux_val, (double)SysCB.last_node_data.temperature,
+           (double)SysCB.last_node_data.humidity);
+}
+
+static void lora_handle_query_frame(const uint8_t *payload, uint8_t data_len) {
+  if (data_len == 0U) {
+    ESP_LOGW(TAG, "Node status response missing online flag payload");
+    return;
+  }
+
+  if (payload[0] != 0x01U) {
+    ESP_LOGW(TAG, "Node status response rejected, payload[0]=0x%02X",
+             payload[0]);
+    return;
+  }
+
+  lora_mark_link_alive("status response");
+  ESP_LOGI(TAG, "Node status response confirmed online");
+}
+
+static void lora_handle_control_frame(const uint8_t *payload, uint8_t data_len) {
+  if (data_len == 0U) {
+    ESP_LOGI(TAG, "Node control response received without payload");
+    return;
+  }
+
+  ESP_LOGI(TAG, "Node control response payload[0]=0x%02X", payload[0]);
+}
+
+static void lora_process_frame(const uint8_t *frame, size_t frame_len) {
+  uint8_t cmd = frame[2];
+  uint8_t data_len = frame[3];
+  const uint8_t *payload = &frame[4];
+  uint8_t crc_received = frame[frame_len - 1U];
+  uint8_t crc_calc = lora_crc8_maxim(&frame[2], (uint16_t)(data_len + 2U));
+
+  if (crc_calc != crc_received) {
+    ESP_LOGW(TAG,
+             "Discarding frame with CRC mismatch: cmd=0x%02X calc=0x%02X recv=0x%02X",
+             cmd, crc_calc, crc_received);
+    return;
+  }
+
+  ESP_LOGI(TAG, "Valid LoRa frame: cmd=0x%02X (%s), len=%u", cmd,
+           lora_cmd_to_string(cmd), data_len);
+
+  switch (cmd) {
+  case CMD_REPORT:
+    lora_handle_report_frame(payload, data_len);
+    break;
+  case CMD_QUERY:
+    lora_handle_query_frame(payload, data_len);
+    break;
+  case CMD_CONTROL:
+    lora_handle_control_frame(payload, data_len);
+    break;
+  default:
+    ESP_LOGW(TAG, "Unsupported LoRa command: 0x%02X", cmd);
+    break;
+  }
+}
+
+static void lora_parse_rx_staging(void) {
+  while (lora_rx_staging_len > 0U) {
+    size_t header_pos = SIZE_MAX;
+
+    for (size_t i = 0U; i + 1U < lora_rx_staging_len; ++i) {
+      if (lora_rx_staging[i] == FRAME_HEADER_H &&
+          lora_rx_staging[i + 1U] == FRAME_HEADER_L) {
+        header_pos = i;
+        break;
+      }
+    }
+
+    if (header_pos == SIZE_MAX) {
+      if (lora_rx_staging_len == 1U &&
+          lora_rx_staging[0] == FRAME_HEADER_H) {
+        return;
+      }
+
+      if (lora_rx_staging[lora_rx_staging_len - 1U] == FRAME_HEADER_H) {
+        lora_rx_staging[0] = FRAME_HEADER_H;
+        lora_rx_staging_len = 1U;
+      } else {
+        lora_rx_staging_len = 0U;
+      }
+      return;
+    }
+
+    if (header_pos > 0U) {
+      ESP_LOGW(TAG, "Dropping %u noise bytes before LoRa frame header",
+               (unsigned int)header_pos);
+      lora_drop_staging_bytes(header_pos);
+    }
+
+    if (lora_rx_staging_len < LORA_MIN_FRAME_LEN) {
+      return;
+    }
+
+    uint8_t payload_len = lora_rx_staging[3];
+    size_t frame_len = LORA_MIN_FRAME_LEN + payload_len;
+    if (frame_len > LORA_MAX_FRAME_LEN) {
+      ESP_LOGW(TAG, "Invalid LoRa frame length: %u", (unsigned int)payload_len);
+      lora_drop_staging_bytes(1U);
+      continue;
+    }
+
+    if (lora_rx_staging_len < frame_len) {
+      return;
+    }
+
+    lora_process_frame(lora_rx_staging, frame_len);
+    lora_drop_staging_bytes(frame_len);
+  }
+}
+
+esp_err_t LoRa_Init(void) {
+  esp_err_t err = ESP_OK;
+
+  ESP_LOGI(TAG, "Starting LoRa MW1268 initialization");
 
   lora_gpio_init();
+  lora_rx_staging_len = 0U;
+  lora_last_valid_frame_tick = 0;
+  lora_initialized = false;
+  SysCB.SysEventFlag &= ~(SUB_LORA_CONFIRMED | SUB_NODE_DATA_READY);
 
-  /* Step 1: 探测并连接模块 */
-  // 先尝试 115200
-  lora_uart_init(115200);
+  err = lora_uart_init(115200);
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "Failed to initialize LoRa UART at 115200: %s",
+             esp_err_to_name(err));
+    return err;
+  }
   gpio_set_level(LORA_MD0_PIN, 1);
   vTaskDelay(pdMS_TO_TICKS(200));
 
   if (lora_send_cmd("AT", "OK", 50) != 0) {
-    // 如果 115200 失败，卸载驱动并尝试 9600
     uart_driver_delete(LORA_UART_PORT);
-    lora_uart_init(9600);
+    err = lora_uart_init(9600);
+    if (err != ESP_OK) {
+      ESP_LOGE(TAG, "Failed to initialize LoRa UART at 9600: %s",
+               esp_err_to_name(err));
+      return err;
+    }
     if (lora_send_cmd("AT", "OK", 50) != 0) {
-      ESP_LOGE(TAG, "LoRa 通信异常：在 115200 和 9600 波特率下都无法建立连接");
-      return;
+      ESP_LOGE(TAG, "Unable to communicate with LoRa module at 115200 or 9600");
+      return ESP_FAIL;
     }
   }
 
-  /* Step 2: 发送出厂重置指令 */
-  ESP_LOGI(TAG, "Sending AT+DEFAULT for Factory Reset...");
+  ESP_LOGI(TAG, "Sending AT+DEFAULT for factory reset");
   lora_send_cmd("AT+DEFAULT", "OK", 200);
   vTaskDelay(pdMS_TO_TICKS(300));
 
-  /* Step 3: 按照出厂默认 115200 速率运行 */
   gpio_set_level(LORA_MD0_PIN, 0);
   vTaskDelay(pdMS_TO_TICKS(200));
 
-  // 根据用户逻辑，DEFAULT 后模块波特率为 115200
   uart_driver_delete(LORA_UART_PORT);
-  lora_uart_init(115200);
-
-  // 等待 AUX 稳定 (如果引脚连接正常)
-  // while(gpio_get_level(LORA_AUX_PIN));
-
-  // 恢复日志输出
+  err = lora_uart_init(115200);
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "Failed to reinitialize LoRa UART at 115200: %s",
+             esp_err_to_name(err));
+    return err;
+  }
 
   lora_device_sta = LORA_RX_STA;
-  ESP_LOGI(TAG, "LoRa MW1268 Ready (User Defaults: 115200, ADDR:0, CH:23)");
+  lora_initialized = true;
+  ESP_LOGI(TAG, "LoRa MW1268 ready (115200 bps, transparent mode, addr=0, ch=23)");
+  return ESP_OK;
 }
 
-/**
- * @brief  LoRa 数据发送 (网关通常只收，但也保留发送能力)
- */
-uint8_t LoRa_SendData(uint8_t *data, uint16_t len) {
-  if (data == NULL || len == 0)
+uint8_t LoRa_SendData(const uint8_t *data, uint16_t len) {
+  if (data == NULL || len == 0U) {
     return 1;
+  }
+  if (!lora_initialized) {
+    ESP_LOGW(TAG, "LoRa send rejected because module is not initialized");
+    return 1;
+  }
 
-  ESP_LOGI(TAG, "LoRa Gateway Sending %d bytes...", len);
+  ESP_LOGI(TAG, "LoRa TX %u bytes", (unsigned int)len);
   ESP_LOG_BUFFER_HEX(TAG, data, len);
 
-  uart_write_bytes(LORA_UART_PORT, (const char *)data, len);
-  return 0;
+  int written = uart_write_bytes(LORA_UART_PORT, (const char *)data, len);
+  return written == (int)len ? 0 : 1;
 }
 
-/**
- * @brief  向子节点发送在线查询指令
- * 格式：AA 55 02 00 [CRC]
- */
 void LoRa_QueryNodeOnline(void) {
-  uint8_t query_pkt[5];
-  query_pkt[0] = FRAME_HEADER_H;
-  query_pkt[1] = FRAME_HEADER_L;
-  query_pkt[2] = CMD_QUERY;
-  query_pkt[3] = 0x00;                       // 数据长度为 0
-  query_pkt[4] = Get_CRC8(&query_pkt[2], 2); // 校验 CMD 和 LEN
-
-  ESP_LOGI(TAG, ">>> LoRa: Querying Sub-Node Online Status...");
-  LoRa_SendData(query_pkt, 5);
+  ESP_LOGI(TAG, "Sending LoRa node online query frame");
+  if (lora_send_frame(CMD_QUERY, NULL, 0U) != ESP_OK) {
+    ESP_LOGW(TAG, "Failed to send node online query frame");
+  }
 }
 
-/**
- * @brief  控制子节点 LED
- * 格式：AA 55 03 01 [VALUE] [CRC]
- */
 void LoRa_ControlNodeLED(uint8_t on_off) {
-  uint8_t ctrl_pkt[6];
-  ctrl_pkt[0] = FRAME_HEADER_H;
-  ctrl_pkt[1] = FRAME_HEADER_L;
-  ctrl_pkt[2] = CMD_CONTROL;
-  ctrl_pkt[3] = 0x01;                      // 数据长度为 1
-  ctrl_pkt[4] = on_off ? 0x01 : 0x00;      // 0x01点亮, 0x00熄灭
-  ctrl_pkt[5] = Get_CRC8(&ctrl_pkt[2], 3); // 校验 CMD + LEN + DATA
+  uint8_t value = on_off ? 0x01U : 0x00U;
 
-  ESP_LOGI(TAG, ">>> LoRa: Sending LED Control (%s) to Sub-Node...",
-           on_off ? "ON" : "OFF");
-  LoRa_SendData(ctrl_pkt, 6);
+  ESP_LOGI(TAG, "Sending LoRa LED control frame: %s", on_off ? "ON" : "OFF");
+  if (lora_send_frame(CMD_CONTROL, &value, 1U) != ESP_OK) {
+    ESP_LOGW(TAG, "Failed to send node LED control frame");
+  }
 }
 
-/**
- * @brief  LoRa 主动事件处理 (轮询接收子节点上传的传感器数据)
- */
 void LoRa_ActiveEvent(void) {
   uint8_t rx_buf[256];
-  int len = lora_uart_read_raw(rx_buf, sizeof(rx_buf) - 1, 10);
+  int len = lora_uart_read_raw(rx_buf, sizeof(rx_buf), 10);
 
   if (len > 0) {
-    // 1. 打印原始十六进制，方便调试
-    ESP_LOGI(TAG, "LoRa Recv Raw [%d]:", len);
+    size_t chunk_len = (size_t)len;
+
     ESP_LOG_BUFFER_HEX(TAG, rx_buf, len);
 
-    // 2. 判定是否为轻量级二进制帧 (AA 55 开头)
-    if (len >= 5 && rx_buf[0] == FRAME_HEADER_H &&
-        rx_buf[1] == FRAME_HEADER_L) {
-      uint8_t cmd = rx_buf[2];
-      uint8_t data_len = rx_buf[3];
-
-      // 安全检查：防止长度溢出
-      if (len < (4 + data_len + 1)) {
-        ESP_LOGW(TAG, "Binary frame too short for declared length %d",
-                 data_len);
-        return;
-      }
-
-      uint8_t crc_received = rx_buf[4 + data_len];
-      // 使用 CRC8_MAXIM 重新计算校验 (从 CMD 到 DATA 结束)
-      uint8_t crc_calc = Get_CRC8(&rx_buf[2], data_len + 2);
-
-      if (crc_calc == crc_received) {
-        ESP_LOGI(TAG, "Binary Frame Valid! (CRC OK) CMD:0x%02X, DataLen:%d",
-                 cmd, data_len);
-      } else {
-        ESP_LOGW(TAG,
-                 "Binary Frame CRC Error! (Calc:0x%02X, Recv:0x%02X). "
-                 "Proceeding anyway for debugging.",
-                 crc_calc, crc_received);
-      }
-
-      // 3. 处理数据上报逻辑 (CMD = 0x01)
-      if (cmd == CMD_REPORT) {
-        // 升级版协议：支持 6 字节负载 (光照2 + 温度2 + 湿度2)
-        if (data_len >= 6) {
-          uint16_t lux_val = (rx_buf[4] << 8) | rx_buf[5];
-          int16_t temp_raw = (int16_t)((rx_buf[6] << 8) | rx_buf[7]);
-          uint16_t humi_raw = (uint16_t)((rx_buf[8] << 8) | rx_buf[9]);
-
-          float temp_val = (float)temp_raw / 10.0f;
-          float humi_val = (float)humi_raw / 10.0f;
-
-          ESP_LOGI(
-              TAG,
-              ">>> Parsed Sensor Data: Light = %d lx, Temp = %.1f C, Humi = "
-              "%.1f %%",
-              lux_val, temp_val, humi_val);
-
-          // 标记 LoRa 通信已确认
-          if (!(SysCB.SysEventFlag & SUB_LORA_CONFIRMED)) {
-            ESP_LOGW(TAG, "通过数据上报确认子设备 LoRa 通信正常");
-            SysCB.SysEventFlag |= SUB_LORA_CONFIRMED;
-          }
-
-          // 4. 更新缓存
-          SysCB.last_node_data.temperature = temp_val;
-          SysCB.last_node_data.humidity = humi_val;
-          SysCB.last_node_data.lightlux = (float)lux_val;
-        }
-        // 兼容旧版协议：仅 2 字节光照
-        else if (data_len >= 2) {
-          uint16_t lux_val = (rx_buf[4] << 8) | rx_buf[5];
-          ESP_LOGI(TAG, ">>> Parsed Sensor Data (Legacy): Light = %d lx",
-                   lux_val);
-
-          if (!(SysCB.SysEventFlag & SUB_LORA_CONFIRMED)) {
-            SysCB.SysEventFlag |= SUB_LORA_CONFIRMED;
-          }
-
-          SysCB.last_node_data.lightlux = (float)lux_val;
-        }
-      }
-      // 4. 处理在线查询回复 (CMD = 0x02)
-      else if (cmd == CMD_QUERY) {
-        if (data_len >= 1 && rx_buf[4] == 0x01) {
-          ESP_LOGW(TAG, ">>> [LoRa 确认] 子节点响应在线查询，通信正常！");
-          SysCB.SysEventFlag |= SUB_LORA_CONFIRMED;
-
-          // [新增] 如果 MQTT 已连接，立即触发 OneNET 子设备上线报备
-          if ((SysCB.SysEventFlag & CONNECT_MQTT) &&
-              !(SysCB.SysEventFlag & SUB_ONLINE_READY)) {
-            ESP_LOGI(TAG, "MQTT 已就绪，立即执行 OneNET 子设备上线报备...");
-            WiFi_Cat1_SubOnline(1, 1);
-            SysCB.SysEventFlag |= SUB_ONLINE_READY;
-          }
-        }
-      }
-    } else {
-      // 如果不是二进制帧，按普通字符串处理
-      rx_buf[len] = 0;
-      ESP_LOGI(TAG, "Gateway Received Text: %s", (char *)rx_buf);
+    if (lora_rx_staging_len + chunk_len > sizeof(lora_rx_staging)) {
+      ESP_LOGW(TAG, "LoRa RX staging overflow, resetting parser state");
+      lora_rx_staging_len = 0U;
     }
+
+    memcpy(lora_rx_staging + lora_rx_staging_len, rx_buf, chunk_len);
+    lora_rx_staging_len += chunk_len;
+    lora_parse_rx_staging();
   }
+
+  lora_check_link_timeout();
 }
