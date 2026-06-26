@@ -1,38 +1,46 @@
-ï»¿/* ============================================================
- * lv_conf.h ï¿½?STM32 åµŒå…¥ï¿½?LVGL v9 é…ç½®
- * é€‚ç”¨ï¿½?STM32F4/F7/H7 + 320Ã—240 TFT + FreeRTOS
- * ï¿½?GitHub lv_conf_template.h å¤åˆ¶åŽä¿®ï¿½? * ============================================================ */
+/* ============================================================
+ * lv_conf.h ??STM32 Ç¶Èë??LVGL v9 ÅäÖÃ
+ * ÊÊÓÃ??STM32F4/F7/H7 + 320¡Á240 TFT + FreeRTOS
+ * ??GitHub lv_conf_template.h ¸´ÖÆºóÐÞ?? * ============================================================ */
 #ifndef LV_CONF_H
 #define LV_CONF_H
 
-/* â”€â”€ é¢œè‰²é…ç½® â”€â”€ */
-#define LV_COLOR_DEPTH 16 /* RGB565ï¼ˆæœ€å¸¸ç”¨ï¿½?*/
-/* 16 = RGB565 | 32 = RGB888/XRGB8888 | 8 = è°ƒè‰²ï¿½?| 1 = å•è‰² */
+/* ©¤©¤ ÑÕÉ«ÅäÖÃ ©¤©¤ */
+#define LV_COLOR_DEPTH 16 /* RGB565£¨×î³£ÓÃ??*/
+/* 16 = RGB565 | 32 = RGB888/XRGB8888 | 8 = µ÷É«??| 1 = µ¥É« */
 
-/* â”€â”€ é»˜è®¤æ˜¾ç¤ºåˆ†è¾¨ï¿½?â”€â”€ */
-#define LV_DPI_DEF 130 /* PPIï¼Œç”¨äºŽç¼©æ”¾å‚ï¿½?*/
+/* ©¤©¤ Ä¬ÈÏÏÔÊ¾·Ö±æ??©¤©¤ */
+#define LV_DPI_DEF 130 /* PPI£¬ÓÃÓÚËõ·Å²Î??*/
 
-/* â”€â”€ å†…å­˜ç®¡ç† â”€â”€ */
-#define LV_MEM_SIZE (64 * 1024) /* LVGL è‡ªèº«å†…å­˜ï¿½?48KB */
-#define LV_MEM_ADR 0x00         /* 0 = ä½¿ç”¨ mallocï¼Œæˆ–æŒ‡å®šç»å¯¹åœ°å€ */
-#define LV_MEM_CUSTOM 0         /* 1 = ç”¨æˆ·è‡ªå®šä¹‰å†…å­˜åˆ†é…å‡½ï¿½?*/
-#define LV_MEMCPY_MEMSET_STD 1  /* 1 = ä½¿ç”¨æ ‡å‡† memcpy/memset */
+/* ©¤©¤ ÄÚ´æ¹ÜÀí ©¤©¤ */
+#define LV_MEM_SIZE (64 * 1024) /* LVGL ×ÔÉíÄÚ´æ??48KB */
+#define LV_MEM_ADR 0x00         /* 0 = Ê¹ÓÃ malloc£¬»òÖ¸¶¨¾ø¶ÔµØÖ· */
+#define LV_MEM_CUSTOM 1         /* 1 = PSRAM heap_caps_malloc */
+#define LV_MEMCPY_MEMSET_STD 1  /* 1 = Ê¹ÓÃ±ê×¼ memcpy/memset */
 
-/* â”€â”€ æ“ä½œç³»ç»Ÿé›†æˆ â”€â”€ */
+/* ©¤©¤ PSRAM ×Ô¶¨ÒåÄÚ´æ·ÖÅäÆ÷ ©¤©¤ */
+#if LV_MEM_CUSTOM
+#define LV_MEM_CUSTOM_INCLUDE "esp_heap_caps.h"
+#define LV_MEM_CUSTOM_ALLOC(size)    heap_caps_malloc((size), MALLOC_CAP_SPIRAM)
+#define LV_MEM_CUSTOM_FREE(ptr)      heap_caps_free(ptr)
+#define LV_MEM_CUSTOM_REALLOC(ptr, size) heap_caps_realloc((ptr), (size), MALLOC_CAP_SPIRAM)
+#endif
+
+/* ©¤©¤ ²Ù×÷ÏµÍ³¼¯³É ©¤©¤ */
 #define LV_USE_OS 0 /* LV_OS_FREERTOS too slow on ESP32-S3 */
 
-/* â”€â”€ æ—¥å¿—çº§åˆ« â”€â”€ */
-#define LV_USE_LOG 0 /* 0 = å…³é—­ï¼Œå¼€å‘æ—¶æ‰“å¼€ LV_LOG_LEVEL_WARN */
+/* ©¤©¤ ÈÕÖ¾¼¶±ð ©¤©¤ */
+#define LV_USE_LOG 0 /* 0 = ¹Ø±Õ£¬¿ª·¢Ê±´ò¿ª LV_LOG_LEVEL_WARN */
 #if LV_USE_LOG
 #define LV_LOG_LEVEL LV_LOG_LEVEL_WARN
 #endif
 
-/* â”€â”€ æ€§èƒ½é€‰é¡¹ â”€â”€ */
-#define LV_DRAW_BUF_STRIDE_ALIGN 1  /* è¡Œå¯¹é½ï¼ˆDMA è¦æ±‚ï¿½?*/
-#define LV_USE_DRAW_SW 1            /* è½¯ä»¶æ¸²æŸ“åŽç«¯ ï¿½?å¿…é¡» */
-#define LV_DRAW_SW_SUPPORT_RGB565 1 /* RGB565 æ”¯æŒ */
+/* ©¤©¤ ÐÔÄÜÑ¡Ïî ©¤©¤ */
+#define LV_DRAW_BUF_STRIDE_ALIGN 1  /* ÐÐ¶ÔÆë£¨DMA ÒªÇó??*/
+#define LV_USE_DRAW_SW 1            /* Èí¼þäÖÈ¾ºó¶Ë ??±ØÐë */
+#define LV_DRAW_SW_SUPPORT_RGB565 1 /* RGB565 Ö§³Ö */
 
-/* â”€â”€ æŽ§ä»¶å¼€å…³ï¼ˆæŒ‰éœ€å¯ç”¨ï¼Œä¸ç”¨çš„æ³¨é‡ŠæŽ‰çœ Flashï¿½?â”€â”€ */
+/* ©¤©¤ ¿Ø¼þ¿ª¹Ø£¨°´ÐèÆôÓÃ£¬²»ÓÃµÄ×¢ÊÍµôÊ¡ Flash??©¤©¤ */
 #define LV_USE_BUTTON 1
 #define LV_USE_LABEL 1
 #define LV_USE_IMAGE 1
@@ -50,26 +58,26 @@
 #define LV_USE_MSGBOX 1
 #define LV_USE_SPINBOX 1
 #define LV_USE_TABVIEW 1
-#define LV_USE_TILEVIEW 0 /* å°‘ç”¨ï¼Œæ³¨é‡ŠæŽ‰ */
+#define LV_USE_TILEVIEW 0 /* ÉÙÓÃ£¬×¢ÊÍµô */
 #define LV_USE_WIN 0
 #define LV_USE_SPINNER 1
 #define LV_USE_LED 1
 #define LV_USE_SPAN 0
 #define LV_USE_SCALE 0
 
-/* â”€â”€ å¸ƒå±€ç³»ç»Ÿ â”€â”€ */
-#define LV_USE_FLEX 1 /* Flex å¸ƒå±€ */
-#define LV_USE_GRID 1 /* Grid å¸ƒå±€ */
+/* ©¤©¤ ²¼¾ÖÏµÍ³ ©¤©¤ */
+#define LV_USE_FLEX 1 /* Flex ²¼¾Ö */
+#define LV_USE_GRID 1 /* Grid ²¼¾Ö */
 
-/* â”€â”€ ä¸»é¢˜ â”€â”€ */
+/* ©¤©¤ Ö÷Ìâ ©¤©¤ */
 #define LV_USE_THEME_DEFAULT 1
 #define LV_USE_THEME_MONO 0
-#define LV_THEME_DEFAULT_GROW 1 /* æ–°æŽ§ä»¶è‡ªåŠ¨ç»§æ‰¿ä¸»ï¿½?*/
+#define LV_THEME_DEFAULT_GROW 1 /* ÐÂ¿Ø¼þ×Ô¶¯¼Ì³ÐÖ÷??*/
 
-/* â”€â”€ å­—ä½“ â”€â”€ */
+/* ©¤©¤ ×ÖÌå ©¤©¤ */
 #define LV_FONT_MONTSERRAT_10 1
 #define LV_FONT_MONTSERRAT_12 1
-#define LV_FONT_MONTSERRAT_14 1 /* 14px é»˜è®¤å­—ä½“ */
+#define LV_FONT_MONTSERRAT_14 1 /* 14px Ä¬ÈÏ×ÖÌå */
 #define LV_FONT_MONTSERRAT_16 1
 #define LV_FONT_MONTSERRAT_18 1
 #define LV_FONT_MONTSERRAT_24 1
@@ -77,34 +85,34 @@
 #define LV_FONT_MONTSERRAT_48 0
 /* LV_FONT_DEFAULT = &lv_font_montserrat_14 */
 
-/* â”€â”€ å›¾ç‰‡è§£ç å™¨ï¼ˆæŒ‰éœ€å¯ç”¨ï¿½?â”€â”€ */
+/* ©¤©¤ Í¼Æ¬½âÂëÆ÷£¨°´ÐèÆôÓÃ??©¤©¤ */
 #define LV_USE_BIN_DECODER 0 /* Binary image decoder */
 #define LV_USE_BMP 0         /* BMP format */
-#define LV_USE_PNG 0         /* PNGï¼ˆéœ€é¢å¤– RAMï¿½?*/
+#define LV_USE_PNG 0         /* PNG£¨Ðè¶îÍâ RAM??*/
 #define LV_USE_JPG 0         /* JPG */
 #define LV_USE_GIF 0         /* GIF */
-#define LV_USE_SJPG 0        /* Split-JPGï¼ˆæµå¼ï¼‰ */
-#define LV_USE_FREETYPE 0    /* TTF å­—ä½“ */
+#define LV_USE_SJPG 0        /* Split-JPG£¨Á÷Ê½£© */
+#define LV_USE_FREETYPE 0    /* TTF ×ÖÌå */
 
-/* â”€â”€ åŠ¨ç”»ä¸Žç‰¹ï¿½?â”€â”€ */
-#define LV_USE_ANIM 1        /* åŠ¨ç”»ç³»ç»Ÿ */
-#define LV_USE_SHADOW 0      /* é˜´å½±ï¼ˆçœèµ„æºæ—¶å…³é—­ï¼‰ */
-#define LV_USE_BLEND_MODES 0 /* æ··åˆæ¨¡å¼ */
+/* ©¤©¤ ¶¯»­ÓëÌØ??©¤©¤ */
+#define LV_USE_ANIM 1        /* ¶¯»­ÏµÍ³ */
+#define LV_USE_SHADOW 0      /* ÒõÓ°£¨Ê¡×ÊÔ´Ê±¹Ø±Õ£© */
+#define LV_USE_BLEND_MODES 0 /* »ìºÏÄ£Ê½ */
 
-/* â”€â”€ æ‚é¡¹ â”€â”€ */
-#define LV_USE_SNAPSHOT 0      /* æˆªå›¾ */
-#define LV_USE_FILE_EXPLORER 0 /* æ–‡ä»¶æµè§ˆï¿½?*/
-#define LV_USE_QRCODE 0        /* äºŒç»´ï¿½?*/
+/* ©¤©¤ ÔÓÏî ©¤©¤ */
+#define LV_USE_SNAPSHOT 0      /* ½ØÍ¼ */
+#define LV_USE_FILE_EXPLORER 0 /* ÎÄ¼þä¯ÀÀ??*/
+#define LV_USE_QRCODE 0        /* ¶þÎ¬??*/
 
-/* â”€â”€ STM32 ç¡¬ä»¶åŠ ï¿½?â”€â”€ */
-/* F4/F7/H7 ï¿½?DMA2Dï¼ˆChrom-ARTï¿½?*/
-#define LV_USE_DRAW_DMA2D 0 /* 1 = å¯ç”¨ DMA2D åŠ é€Ÿï¼ˆéœ€å®žçŽ°å›žè°ƒï¿½?*/
+/* ©¤©¤ STM32 Ó²¼þ¼Ó??©¤©¤ */
+/* F4/F7/H7 ??DMA2D£¨Chrom-ART??*/
+#define LV_USE_DRAW_DMA2D 0 /* 1 = ÆôÓÃ DMA2D ¼ÓËÙ£¨ÐèÊµÏÖ»Øµ÷??*/
 
-/* â”€â”€ è¾“å…¥è®¾å¤‡é»˜è®¤åˆ†ç»„ â”€â”€ */
-#define LV_INDEV_DEF_READ_PERIOD 30 /* è¾“å…¥è¯»å–å‘¨æœŸ (ms) */
+/* ©¤©¤ ÊäÈëÉè±¸Ä¬ÈÏ·Ö×é ©¤©¤ */
+#define LV_INDEV_DEF_READ_PERIOD 30 /* ÊäÈë¶ÁÈ¡ÖÜÆÚ (ms) */
 
-/* â”€â”€ å¸§çŽ‡ â”€â”€ */
-#define LV_DEF_REFR_PERIOD 16 /* é»˜è®¤åˆ·æ–°å‘¨æœŸ (ms)ï¼Œçº¦ 30 FPS */
+/* ©¤©¤ Ö¡ÂÊ ©¤©¤ */
+#define LV_DEF_REFR_PERIOD 16 /* Ä¬ÈÏË¢ÐÂÖÜÆÚ (ms)£¬Ô¼ 30 FPS */
 
 /* ---- Performance monitor (FPS + CPU) ---- */
 #define LV_USE_PERF_MONITOR 1

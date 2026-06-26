@@ -1,4 +1,4 @@
-﻿#include "app_config.h"
+#include "app_config.h"
 #include "mem_guard.h"
 #include "bsp_led.h"
 #include "bsp_storage.h"
@@ -266,7 +266,7 @@ void wifi_state_callback(wifi_state_t state) {
                   &mqtt_start_task_handle);
     }
     if (ota_bootstrap_task_handle == NULL && !mem_guard_level_at_least(MEM_LEVEL_CRITICAL)) {
-      xTaskCreate(ota_bootstrap_task, "ota_boot", 12288, NULL, 5,
+      xTaskCreate(ota_bootstrap_task, "ota_boot", 8192, NULL, 5,
                   &ota_bootstrap_task_handle);
     }
   } else if (state == WIFI_STATE_DISCONNECTED) {
@@ -387,7 +387,7 @@ void app_main(void) {
     wifi_manager_start_ap_provisioning("ESP32_Config", "12345678");
   }
 
-  xTaskCreate(unified_sensor_upload_task, "sensor_upload", 8192, NULL, 5, NULL);
+  xTaskCreate(unified_sensor_upload_task, "sensor_upload", 6144, NULL, 5, NULL);
   xTaskCreate(cat1_delayed_start_task, "cat1_delay", 4096, NULL, 4, NULL);
 
   soil_sensor_init();
@@ -402,7 +402,7 @@ void app_main(void) {
   lvgl_ui_create();
   ESP_LOGI("MAIN", "LVGL sensor dashboard started");
 
-  xTaskCreate(lvgl_task, "lvgl", 20480, NULL, 3, NULL);
+  xTaskCreate(lvgl_task, "lvgl", 16384, NULL, 3, NULL);
 
   /* Initialise memory guard after all subsystems are up */
   mem_guard_init();
