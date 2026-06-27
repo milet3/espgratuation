@@ -144,6 +144,7 @@
 #define ATTRIBUTE_HUMI "humidity_D001"
 #define ATTRIBUTE_FIRMWARE_VER \
   "firmware_version" // 固件版本属性标识符 (直连设备 OTA 关键)
+#define ATTRIBUTE_FACTORY_RESET "factory_reset"  // 出厂重置属性标识符
 
 /*---------------------------------------------------------------*/
 /*-------------------用于各种系统参数的结构体--------------------*/

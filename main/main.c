@@ -1,9 +1,11 @@
 #include "app_config.h"
 #include "mem_guard.h"
+#include "crash_report.h"
 #include "bsp_led.h"
 #include "bsp_storage.h"
 #include "bsp_uart.h"
 #include "driver/gpio.h"
+#include "esp_timer.h"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
 #include "esp_mqtt.h"
@@ -19,6 +21,7 @@
 #include "wifi_manager.h"
 #include <stdbool.h>
 #include <stdlib.h>
+#include <string.h>
 #include <time.h>
 
 Info_CB info;
@@ -137,6 +140,16 @@ static void ota_bootstrap_task(void *pvParameters) {
   if ((SysCB.SysEventFlag & CONNECT_MQTT) && !gateway_fw_reported) {
     WiFi_Cat1_PropertyVersion(0);
     gateway_fw_reported = true;
+    /* --- Crash report upload --- */
+    if (crash_report_has_pending()) {
+      ESP_LOGI("MAIN", "Uploading crash report...");
+      const char *crash_json = crash_report_get_json();
+      const char *topic = "$sys/" GW_PRODUCTID "/" GW_DEVICENAME "/thing/event/crash/post";
+      esp_mqtt_publish_msg(topic, crash_json, (int)strlen(crash_json), 1, 0);
+      ESP_LOGI("MAIN", "Crash report sent, clearing...");
+      crash_report_clear();
+    }
+    /* --- End crash report --- */
     vTaskDelay(pdMS_TO_TICKS(5000));
   }
 
@@ -338,13 +351,149 @@ static void lvgl_task(void *pvParameters) {
     vTaskDelay(pdMS_TO_TICKS(16));
   }
 }
+/*-------------------------------------------------*/
+/* Factory Reset Button Task                       */
+/* GPIO0 (BOOT button) - hold 5s to factory reset  */
+/*-------------------------------------------------*/
+#define FACTORY_RST_GPIO      GPIO_NUM_0
+#define FACTORY_RST_HOLD_MS   5000
+#define FACTORY_RST_CHECK_MS  100
+
+static void factory_reset_button_task(void *pvParameters) {
+  (void)pvParameters;
+
+  gpio_config_t io_conf = {
+      .intr_type = GPIO_INTR_DISABLE,
+      .mode = GPIO_MODE_INPUT,
+      .pin_bit_mask = (1ULL << FACTORY_RST_GPIO),
+      .pull_up_en = 1,
+      .pull_down_en = 0,
+  };
+  gpio_config(&io_conf);
+
+  uint32_t press_ms = 0;
+  bool was_triggered = false;
+
+  while (1) {
+    if (gpio_get_level(FACTORY_RST_GPIO) == 0) {
+      press_ms += FACTORY_RST_CHECK_MS;
+      if (press_ms >= FACTORY_RST_HOLD_MS && !was_triggered) {
+        was_triggered = true;
+        ESP_LOGW("MAIN", "Factory reset button held, resetting...");
+        for (int blink = 0; blink < 10; blink++) {
+          bsp_led_set(true);
+          vTaskDelay(pdMS_TO_TICKS(100));
+          bsp_led_set(false);
+          vTaskDelay(pdMS_TO_TICKS(100));
+        }
+        factory_reset();
+      }
+    } else {
+      press_ms = 0;
+      was_triggered = false;
+    }
+    vTaskDelay(pdMS_TO_TICKS(FACTORY_RST_CHECK_MS));
+  }
+}
+
+
+/* Boot loop detection */
+static void boot_loop_safe_mode(void);
+static void boot_loop_heartbeat_callback(void *arg);
+
+/*-------------------------------------------------*/
+/* Boot Loop Safe Mode                             */
+/* When boot loop threshold reached, only WiFi AP  */
+/* is started for rescue OTA. No sensors, no MQTT. */
+/*-------------------------------------------------*/
+static void boot_loop_safe_mode(void) {
+  ESP_LOGE("BOOT", "========================================");
+  ESP_LOGE("BOOT", "BOOT LOOP DETECTED - Safe Mode Active");
+  ESP_LOGE("BOOT", "Only WiFi AP is running for rescue OTA.");
+  ESP_LOGE("BOOT", "Connect to ESP32_Config / 12345678");
+  ESP_LOGE("BOOT", "========================================");
+
+  /* LED on solid to indicate safe mode */
+  bsp_led_init();
+  bsp_led_set(true);
+
+  /* Start WiFi AP only - minimal init for rescue */
+  wifi_manager_init();
+  wifi_manager_start_ap_provisioning("ESP32_Config", "12345678");
+
+  ESP_LOGI("BOOT", "Safe mode AP started. Waiting for rescue OTA...");
+
+  /* Stay in safe mode forever */
+  while (1) {
+    vTaskDelay(pdMS_TO_TICKS(1000));
+  }
+}
+
+/*-------------------------------------------------*/
+/* Boot Loop Heartbeat                              */
+/* Called 60s after boot. If we get here, the       */
+/* system is stable - clear the boot loop counter.  */
+/*-------------------------------------------------*/
+static void boot_loop_heartbeat_callback(void *arg) {
+  (void)arg;
+  ESP_LOGI("BOOT", "System stable for 60s, clearing boot loop counter");
+  boot_loop_set_count(0);
+  boot_loop_set_was_stable(1);
+}
+
 void app_main(void) {
   app_configure_log_levels();
   ESP_LOGI("FIRMWARE", "Current firmware version: %s",
            WiFi_Cat1_GetRuntimeFirmwareVersion());
 
   ESP_ERROR_CHECK(EEprom_Init());
+
+
+  /* === Boot Loop Detection (must be right after NVS init) === */
+  {
+    uint32_t boot_count = boot_loop_get_count();
+    uint32_t was_stable = boot_loop_get_was_stable();
+    esp_reset_reason_t rst_reason = esp_reset_reason();
+
+    ESP_LOGI("BOOT", "Reset reason: %d, boot_count=%lu, was_stable=%lu",
+             (int)rst_reason, boot_count, was_stable);
+
+    /* If last boot did not survive 60s, increment counter */
+    if (!was_stable) {
+      boot_count++;
+    } else {
+      boot_count = 1; /* First boot in a long while */
+    }
+
+    /* Mark unstable until heartbeat proves otherwise */
+    boot_loop_set_was_stable(0);
+    boot_loop_set_count(boot_count);
+
+    if (boot_count >= 3) {
+      ESP_LOGE("BOOT", "Boot loop threshold reached (%lu >= 3)", boot_count);
+      /* Reset counter so next boot will not immediately re-enter safe mode */
+      boot_loop_set_count(0);
+      boot_loop_safe_mode();
+      /* safe mode never returns */
+    }
+
+    /* Schedule heartbeat: 60s stable uptime clears boot_count */
+    esp_timer_handle_t heartbeat_timer = NULL;
+    const esp_timer_create_args_t heartbeat_args = {
+        .callback = &boot_loop_heartbeat_callback,
+        .name = "boot_heartbeat"
+    };
+    ESP_ERROR_CHECK(esp_timer_create(&heartbeat_args, &heartbeat_timer));
+    ESP_ERROR_CHECK(esp_timer_start_once(heartbeat_timer, 60 * 1000 * 1000));
+  }
+  /* === End Boot Loop Detection === */
   EEprom_ReadInfo();
+  /* --- Factory reset check --- */
+  if (factory_reset_is_pending()) {
+    ESP_LOGW("MAIN", "Factory reset flag detected, executing full reset...");
+    factory_reset();
+  }
+  crash_report_init();
 
   srand((unsigned int)time(NULL));
 
@@ -370,6 +519,7 @@ void app_main(void) {
   ESP_LOGI("MAIN", "System startup complete, WiFi priority, CAT1 off");
 
   bsp_led_init();
+  xTaskCreate(factory_reset_button_task, "factory_rst_btn", 2048, NULL, 1, NULL);
   wifi_manager_init();
   wifi_set_state_callback(wifi_state_callback);
 

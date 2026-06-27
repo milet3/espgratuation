@@ -9,6 +9,7 @@
 #define __BSP_STORAGE_H
 
 #include "stdint.h"
+#include <stdbool.h>
 #include "esp_err.h"
 
 // 命名空间定义，NVS中存储数据需要一个命名空间
@@ -44,4 +45,94 @@ void EEprom_WriteData(const char* key, void *data, size_t len);
  */
 void EEprom_ReadInfo(void);
 
+
+
+/**
+ * @brief 获取 boot loop 计数器（连续短命启动次数）
+ * @return 当前 boot_count 值（首次启动返回 0）
+ */
+uint32_t boot_loop_get_count(void);
+
+/**
+ * @brief 设置 boot loop 计数器
+ * @param count 新的计数值
+ */
+void boot_loop_set_count(uint32_t count);
+
+/**
+ * @brief 获取上次启动是否稳定运行（存活 > 60s）
+ * @return 0 = 上次启动未稳定，1 = 上次启动已稳定
+ */
+uint32_t boot_loop_get_was_stable(void);
+
+/**
+ * @brief 设置稳定标志
+ * @param was_stable 0 = 未稳定，1 = 已稳定
+ */
+void boot_loop_set_was_stable(uint32_t was_stable);
+/**
+ * @brief 工厂重置：擦除所有 NVS 数据并立即重启
+ */
+void factory_reset(void);
+
+/**
+ * @brief 半工厂重置：仅擦除 WiFi 凭证和传感器校准
+ */
+void partial_factory_reset(void);
+
+/**
+ * @brief 设置出厂重置标志（由 MQTT/按键触发时调用）
+ */
+void factory_reset_set_pending(void);
+
+/**
+ * @brief 检查是否有待执行的出厂重置
+ * @return true 有待执行的重置
+ */
+bool factory_reset_is_pending(void);
+
+
+/**
+ * @brief 获取 boot loop 计数器（连续短命启动次数）
+ * @return 当前 boot_count 值（首次启动返回 0）
+ */
+uint32_t boot_loop_get_count(void);
+
+/**
+ * @brief 设置 boot loop 计数器
+ * @param count 新的计数值
+ */
+void boot_loop_set_count(uint32_t count);
+
+/**
+ * @brief 获取上次启动是否稳定运行（存活 > 60s）
+ * @return 0 = 上次启动未稳定，1 = 上次启动已稳定
+ */
+uint32_t boot_loop_get_was_stable(void);
+
+/**
+ * @brief 设置稳定标志
+ * @param was_stable 0 = 未稳定，1 = 已稳定
+ */
+void boot_loop_set_was_stable(uint32_t was_stable);
+/**
+ * @brief 工厂重置：擦除所有 NVS 数据并立即重启
+ */
+void factory_reset(void);
+
+/**
+ * @brief 半工厂重置：仅擦除 WiFi 凭证和传感器校准
+ */
+void partial_factory_reset(void);
+
+/**
+ * @brief 设置出厂重置标志（由 MQTT/按键触发时调用）
+ */
+void factory_reset_set_pending(void);
+
+/**
+ * @brief 检查是否有待执行的出厂重置
+ * @return true 有待执行的重置
+ */
+bool factory_reset_is_pending(void);
 #endif // __BSP_STORAGE_H

@@ -9,3 +9,4 @@ ota_0,    app,  ota_0,   ,        3M,
 ota_1,    app,  ota_1,   ,        3M,
 # Storage for web server or user data
 storage,  data, spiffs,  ,        1M,
+coredump, data, coredump,,        0x10000,

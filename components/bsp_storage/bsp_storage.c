@@ -10,7 +10,10 @@
 #include "nvs_flash.h"
 #include "nvs.h"
 #include "string.h"
-#include "app_config.h" // 引入全局的结构体定义
+#include "app_config.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "esp_system.h" // 引入全局的结构体定义
 
 static const char *TAG = "BSP_NVS";
 
@@ -117,4 +120,74 @@ void EEprom_ReadInfo(void)
     // 注意：这里需要替换 u1_printf 为 ESP_LOGI，因为 ESP32 不使用 u1_printf
     ESP_LOGI(TAG, "网关当前版本号：%s", info.Version[0]);    // 串口输出提示信息
     ESP_LOGI(TAG, "子设备当前版本号：%s", info.Version[1]);  // 串口输出提示信息
+}
+
+
+/*-------------------------------------------------*/
+/* Boot Loop Detection - NVS keys                  */
+/*-------------------------------------------------*/
+#define BOOT_COUNT_KEY     "boot_cnt"
+#define BOOT_WAS_STABLE_KEY "boot_stbl"
+
+uint32_t boot_loop_get_count(void) {
+    uint32_t count = 0;
+    EEprom_ReadData(BOOT_COUNT_KEY, &count, sizeof(count));
+    return count;
+}
+
+void boot_loop_set_count(uint32_t count) {
+    EEprom_WriteData(BOOT_COUNT_KEY, &count, sizeof(count));
+}
+
+uint32_t boot_loop_get_was_stable(void) {
+    uint32_t was_stable = 0;
+    EEprom_ReadData(BOOT_WAS_STABLE_KEY, &was_stable, sizeof(was_stable));
+    return was_stable;
+}
+
+void boot_loop_set_was_stable(uint32_t was_stable) {
+    EEprom_WriteData(BOOT_WAS_STABLE_KEY, &was_stable, sizeof(was_stable));
+}
+
+/*-------------------------------------------------*/
+/* Factory Reset Functions                        */
+/*-------------------------------------------------*/
+#define FACTORY_RESET_KEY "factory_rst"
+
+void factory_reset(void) {
+    ESP_LOGW(TAG, "=== FACTORY RESET TRIGGERED ===");
+    ESP_LOGW(TAG, "Erasing all NVS data...");
+    nvs_flash_erase();
+    ESP_LOGW(TAG, "NVS erased. Rebooting in 3 seconds...");
+    vTaskDelay(pdMS_TO_TICKS(3000));
+    esp_restart();
+}
+
+void partial_factory_reset(void) {
+    ESP_LOGW(TAG, "=== PARTIAL FACTORY RESET ===");
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &handle);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to open NVS: %s", esp_err_to_name(err));
+        return;
+    }
+    nvs_erase_key(handle, "wifi_creds");
+    nvs_erase_key(handle, "soil_calib");
+    nvs_commit(handle);
+    nvs_close(handle);
+    ESP_LOGW(TAG, "Partial reset done. Rebooting...");
+    vTaskDelay(pdMS_TO_TICKS(2000));
+    esp_restart();
+}
+
+void factory_reset_set_pending(void) {
+    uint32_t flag = 1;
+    EEprom_WriteData(FACTORY_RESET_KEY, &flag, sizeof(flag));
+    ESP_LOGW(TAG, "Factory reset flag set. Will execute on next reboot.");
+}
+
+bool factory_reset_is_pending(void) {
+    uint32_t flag = 0;
+    EEprom_ReadData(FACTORY_RESET_KEY, &flag, sizeof(flag));
+    return (flag == 1);
 }

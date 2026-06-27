@@ -17,6 +17,7 @@
 #include "mw1268_app.h"
 #include "utils_hmac.h"
 #include "wifi_cat1.h"
+#include "bsp_storage.h"
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -52,7 +53,7 @@ static const char URLdata[8][4] = {"%2B", "%20", "%2F", "%3F",
                                    "%25", "%23", "%26", "%3D"};
 
 static void ota_notify_check_task(void *pvParameters) {
-  ESP_LOGI(OTA_TAG, "ÊÕµ½ ota/inform£¬×¼±¸´¥·¢ OTA ¼ì²é");
+  ESP_LOGI(OTA_TAG, "ï¿½Õµï¿½ ota/informï¿½ï¿½×¼ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ OTA ï¿½ï¿½ï¿½");
   vTaskDelay(pdMS_TO_TICKS(500));
   OneNET_FuseOTA_CheckTask();
   ota_notify_task_handle = NULL;
@@ -61,7 +62,7 @@ static void ota_notify_check_task(void *pvParameters) {
 
 static void __attribute__((unused)) mqtt_schedule_ota_check_from_notify(void) {
   if (ota_notify_task_handle != NULL) {
-    ESP_LOGW(OTA_TAG, "OTA Í¨Öª´¦ÀíÈÎÎñÒÑÔÚ¶ÓÁÐÖÐ£¬ºöÂÔÖØ¸´´¥·¢");
+    ESP_LOGW(OTA_TAG, "OTA Í¨Öªï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ú¶ï¿½ï¿½ï¿½ï¿½Ð£ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ø¸ï¿½ï¿½ï¿½ï¿½ï¿½");
     return;
   }
 
@@ -69,31 +70,31 @@ static void __attribute__((unused)) mqtt_schedule_ota_check_from_notify(void) {
                               &ota_notify_task_handle);
   if (ok != pdPASS) {
     ota_notify_task_handle = NULL;
-    ESP_LOGE(OTA_TAG, "´´½¨ ota_notify ÈÎÎñÊ§°Ü");
+    ESP_LOGE(OTA_TAG, "ï¿½ï¿½ï¿½ï¿½ ota_notify ï¿½ï¿½ï¿½ï¿½Ê§ï¿½ï¿½");
   } else {
-    ESP_LOGI(OTA_TAG, "ÒÑµ÷¶È OTA ¼ì²éÈÎÎñ");
+    ESP_LOGI(OTA_TAG, "ï¿½Ñµï¿½ï¿½ï¿½ OTA ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½");
   }
 }
 
 static void ota_notify_reboot_task(void *pvParameters) {
   (void)pvParameters;
 
-  ESP_LOGI(OTA_TAG, "ÊÕµ½ ota/inform£¬×¼±¸ÖØÆô²¢×ßÍ³Ò» OTA Æô¶¯Á÷³Ì");
+  ESP_LOGI(OTA_TAG, "ï¿½Õµï¿½ ota/informï¿½ï¿½×¼ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Í³Ò» OTA ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½");
   WiFi_Cat1_RequestOtaNotifyReboot();
   vTaskDelay(pdMS_TO_TICKS(OTA_NOTIFY_REBOOT_DELAY_MS));
-  ESP_LOGI(OTA_TAG, "¼´½«ÖØÆô£¬Æô¶¯ºóÍ³Ò»Ö´ÐÐ OTA bootstrap");
+  ESP_LOGI(OTA_TAG, "ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Í³Ò»Ö´ï¿½ï¿½ OTA bootstrap");
   ota_notify_task_handle = NULL;
   esp_restart();
 }
 
 static void mqtt_schedule_ota_reboot_from_notify(void) {
   if (WiFi_Cat1_IsOtaNotifyBootstrapPendingOrActive()) {
-    ESP_LOGW(OTA_TAG, "OTA ÖØÆôÁ÷³ÌÒÑ¹ÒÆð»òÕýÔÚÆô¶¯Á´Â·ÖÐ£¬ºöÂÔÖØ¸´Í¨Öª");
+    ESP_LOGW(OTA_TAG, "OTA ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ñ¹ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Â·ï¿½Ð£ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ø¸ï¿½Í¨Öª");
     return;
   }
 
   if (ota_notify_task_handle != NULL) {
-    ESP_LOGW(OTA_TAG, "OTA Í¨ÖªÖØÆôÈÎÎñÒÑÔÚ¶ÓÁÐÖÐ£¬ºöÂÔÖØ¸´´¥·¢");
+    ESP_LOGW(OTA_TAG, "OTA Í¨Öªï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ú¶ï¿½ï¿½ï¿½ï¿½Ð£ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ø¸ï¿½ï¿½ï¿½ï¿½ï¿½");
     return;
   }
 
@@ -101,9 +102,9 @@ static void mqtt_schedule_ota_reboot_from_notify(void) {
                               3, &ota_notify_task_handle);
   if (ok != pdPASS) {
     ota_notify_task_handle = NULL;
-    ESP_LOGE(OTA_TAG, "´´½¨ ota_notify ÖØÆôÈÎÎñÊ§°Ü");
+    ESP_LOGE(OTA_TAG, "ï¿½ï¿½ï¿½ï¿½ ota_notify ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ê§ï¿½ï¿½");
   } else {
-    ESP_LOGI(OTA_TAG, "ÒÑµ÷¶È OTA Í¨ÖªÖØÆôÈÎÎñ");
+    ESP_LOGI(OTA_TAG, "ï¿½Ñµï¿½ï¿½ï¿½ OTA Í¨Öªï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½");
   }
 }
 
@@ -182,12 +183,12 @@ static void mqtt_try_subdevice_login_now(const char *reason) {
 static void mqtt_publish_ota_notify_reply(const char *reply_id, int code,
                                           const char *msg) {
   if (mqtt_client == NULL) {
-    ESP_LOGE(OTA_TAG, "MQTT ¿Í»§¶ËÎ´³õÊ¼»¯£¬ÎÞ·¨»Ø·¢ ota/inform_reply");
+    ESP_LOGE(OTA_TAG, "MQTT ï¿½Í»ï¿½ï¿½ï¿½Î´ï¿½ï¿½Ê¼ï¿½ï¿½ï¿½ï¿½ï¿½Þ·ï¿½ï¿½Ø·ï¿½ ota/inform_reply");
     return;
   }
 
   if (!(SysCB.SysEventFlag & CONNECT_MQTT)) {
-    ESP_LOGW(OTA_TAG, "MQTT Î´Á¬½Ó£¬Ìø¹ý ota/inform_reply »Ø·¢");
+    ESP_LOGW(OTA_TAG, "MQTT Î´ï¿½ï¿½ï¿½Ó£ï¿½ï¿½ï¿½ï¿½ï¿½ ota/inform_reply ï¿½Ø·ï¿½");
     return;
   }
 
@@ -213,7 +214,7 @@ static void mqtt_publish_ota_notify_reply(const char *reply_id, int code,
            GW_DEVICENAME);
   int msg_id =
       esp_mqtt_client_publish(mqtt_client, topic, payload, strlen(payload), 1, 0);
-  ESP_LOGI(OTA_TAG, "ÒÑ·¢²¼ ota/inform_reply£¬msg_id=%d£¬payload=%s", msg_id,
+  ESP_LOGI(OTA_TAG, "ï¿½Ñ·ï¿½ï¿½ï¿½ ota/inform_replyï¿½ï¿½msg_id=%dï¿½ï¿½payload=%s", msg_id,
            payload);
   cJSON_Delete(root);
 }
@@ -356,7 +357,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base,
 
   switch ((esp_mqtt_event_id_t)event_id) {
   case MQTT_EVENT_CONNECTED:
-    ESP_LOGI(TAG, "MQTT ÒÑÁ¬½Óµ½ OneNET");
+    ESP_LOGI(TAG, "MQTT ï¿½ï¿½ï¿½ï¿½ï¿½Óµï¿½ OneNET");
     SysCB.SysEventFlag |= CONNECT_MQTT;
     SysCB.SysEventFlag &= ~SUB_ONLINE_READY;
     disconnect_start_tick = 0;
@@ -368,7 +369,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base,
       ESP_LOGD(TAG, "Subscribed topic=%s, msg_id=%d", TopicBuff[i], msg_id);
       if (i == 8) {
         ota_inform_sub_msg_id = msg_id;
-        ESP_LOGI(OTA_TAG, "¶©ÔÄ OTA Í¨ÖªÖ÷Ìâ: %s, msg_id=%d", TopicBuff[i], msg_id);
+        ESP_LOGI(OTA_TAG, "ï¿½ï¿½ï¿½ï¿½ OTA Í¨Öªï¿½ï¿½ï¿½ï¿½: %s, msg_id=%d", TopicBuff[i], msg_id);
       }
     }
     } else {
@@ -377,15 +378,15 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base,
 
     if ((SysCB.SysEventFlag & SUB_LORA_CONFIRMED) &&
         !(SysCB.SysEventFlag & SUB_ONLINE_READY)) {
-      ESP_LOGI(TAG, "LoRa ÒÑÈ·ÈÏÁ¬Í¨£¬¿ªÊ¼ÉÏ±¨×ÓÉè±¸ÉÏÏß");
+      ESP_LOGI(TAG, "LoRa ï¿½ï¿½È·ï¿½ï¿½ï¿½ï¿½Í¨ï¿½ï¿½ï¿½ï¿½Ê¼ï¿½Ï±ï¿½ï¿½ï¿½ï¿½è±¸ï¿½ï¿½ï¿½ï¿½");
       mqtt_try_subdevice_login_now("mqtt connected");
     } else {
-      ESP_LOGI(TAG, "µÈ´ý LoRa È·ÈÏºóÔÙÉÏ±¨×ÓÉè±¸ÉÏÏß");
+      ESP_LOGI(TAG, "ï¿½È´ï¿½ LoRa È·ï¿½Ïºï¿½ï¿½ï¿½ï¿½Ï±ï¿½ï¿½ï¿½ï¿½è±¸ï¿½ï¿½ï¿½ï¿½");
     }
     break;
 
   case MQTT_EVENT_DISCONNECTED:
-    ESP_LOGW(TAG, "MQTT ÒÑ¶Ï¿ªÁ¬½Ó");
+    ESP_LOGW(TAG, "MQTT ï¿½Ñ¶Ï¿ï¿½ï¿½ï¿½ï¿½ï¿½");
     SysCB.SysEventFlag &= ~CONNECT_MQTT;
     SysCB.SysEventFlag &= ~SUB_ONLINE_READY;
 
@@ -396,7 +397,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base,
         uint32_t diff =
             (xTaskGetTickCount() - disconnect_start_tick) * portTICK_PERIOD_MS;
         if (diff > MQTT_DISCONNECT_RESET_TIMEOUT_MS) {
-          ESP_LOGE(TAG, "MQTT ¶Ï¿ªÊ±¼ä¹ý³¤£¬ÖØÖÃ CAT1 Ä£¿é");
+          ESP_LOGE(TAG, "MQTT ï¿½Ï¿ï¿½Ê±ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ CAT1 Ä£ï¿½ï¿½");
           disconnect_start_tick = 0;
           Cat1_Reset();
         }
@@ -407,7 +408,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base,
   case MQTT_EVENT_SUBSCRIBED:
     ESP_LOGD(TAG, "MQTT subscribed, msg_id=%d", event->msg_id);
     if (event->msg_id == ota_inform_sub_msg_id) {
-      ESP_LOGI(OTA_TAG, "OTA Í¨ÖªÖ÷Ìâ¶©ÔÄ³É¹¦, msg_id=%d", event->msg_id);
+      ESP_LOGI(OTA_TAG, "OTA Í¨Öªï¿½ï¿½ï¿½â¶©ï¿½Ä³É¹ï¿½, msg_id=%d", event->msg_id);
     }
     break;
 
@@ -488,7 +489,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base,
       snprintf(reply_id, sizeof(reply_id), "%lu",
                (unsigned long)xTaskGetTickCount());
 
-      ESP_LOGI(OTA_TAG, "ÊÕµ½ ota/inform Ô­Ê¼ÔØºÉ: %.*s", event->data_len,
+      ESP_LOGI(OTA_TAG, "ï¿½Õµï¿½ ota/inform Ô­Ê¼ï¿½Øºï¿½: %.*s", event->data_len,
                event->data);
       cJSON *root = cJSON_ParseWithLength(event->data, event->data_len);
       if (root != NULL) {
@@ -499,7 +500,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base,
         }
         cJSON_Delete(root);
       } else {
-        ESP_LOGW(OTA_TAG, "ota/inform ÔØºÉ²»ÊÇºÏ·¨µÄ JSON£¬¼ÌÐø°´Ä¬ÈÏ id »Ø°ü");
+        ESP_LOGW(OTA_TAG, "ota/inform ï¿½ØºÉ²ï¿½ï¿½ÇºÏ·ï¿½ï¿½ï¿½ JSONï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ä¬ï¿½ï¿½ id ï¿½Ø°ï¿½");
       }
 
       mqtt_publish_ota_notify_reply(reply_id, 200, "success");
@@ -541,6 +542,17 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base,
             ESP_LOGI(TAG, "Set sub-node LED=%d", node_led_value);
             LoRa_ControlNodeLED(node_led_value);
             mqtt_publish_property_state(reply_id, ATTRIBUTE2, node_led_value);
+
+          /* Factory reset command */
+          int factory_rst_val = mqtt_get_numeric_value(
+              cJSON_GetObjectItem(target_params, ATTRIBUTE_FACTORY_RESET), &ok);
+          if (ok && factory_rst_val == 1) {
+            ESP_LOGW(TAG, "Factory reset command received via MQTT!");
+            mqtt_publish_property_state(reply_id, ATTRIBUTE_FACTORY_RESET, 0);
+            factory_reset_set_pending();
+            vTaskDelay(pdMS_TO_TICKS(2000));
+            factory_reset();
+          }
           }
         }
 
@@ -590,7 +602,7 @@ esp_err_t esp_mqtt_app_start(const char *broker_uri) {
              MQTT_PORT);
   }
 
-  ESP_LOGI(TAG, "ÕýÔÚÁ¬½Ó MQTT: %s", target_uri);
+  ESP_LOGI(TAG, "ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ MQTT: %s", target_uri);
 
   esp_mqtt_client_config_t mqtt_cfg = {
       .broker.address.uri = target_uri,
@@ -629,7 +641,7 @@ esp_err_t esp_mqtt_app_start(const char *broker_uri) {
     return err;
   }
 
-  ESP_LOGI(TAG, "MQTT ¿Í»§¶ËÒÑÆô¶¯");
+  ESP_LOGI(TAG, "MQTT ï¿½Í»ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½");
   return ESP_OK;
 }
 
