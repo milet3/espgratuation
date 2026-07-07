@@ -1,6 +1,7 @@
-#include "IIC_SENSOR.h"
+﻿#include "IIC_SENSOR.h"
 #include "app_config.h"
 #include "driver/i2c.h"
+#include "driver/gpio.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
@@ -12,6 +13,7 @@ static const char *TAG = "IIC_SENSOR";
 #define I2C_MASTER_FREQ_HZ 50000
 #define I2C_MASTER_TX_BUF_DISABLE 0
 #define I2C_MASTER_RX_BUF_DISABLE 0
+#define I2C_BUS_FAIL_THRESHOLD 5
 
 static iic_sensor_data_t g_sensor_data = {0};
 static SemaphoreHandle_t g_sensor_mutex = NULL;
@@ -19,7 +21,57 @@ static bool g_sht30_ready = false;
 static bool g_bh1750_ready = false;
 static uint8_t g_bh1750_runtime_addr = 0;
 
-static uint8_t bh1750_normalize_addr(uint8_t addr) {
+static void i2c_bus_recover(i2c_port_t i2c_num, int sda_pin, int scl_pin)
+{
+  ESP_LOGW(TAG, "I2C bus stuck, attempting recovery by clocking SCL...");
+
+  gpio_set_direction(sda_pin, GPIO_MODE_INPUT_OUTPUT_OD);
+  gpio_set_direction(scl_pin, GPIO_MODE_INPUT_OUTPUT_OD);
+
+  gpio_set_level(sda_pin, 1);
+  gpio_set_level(scl_pin, 1);
+  esp_rom_delay_us(10);
+
+  if (gpio_get_level(sda_pin) == 1) {
+    ESP_LOGI(TAG, "I2C bus not actually stuck, SDA already high");
+    i2c_reset_tx_fifo(i2c_num);
+    i2c_reset_rx_fifo(i2c_num);
+    return;
+  }
+
+  bool sda_released = false;
+  int pulses = 0;
+  for (int i = 0; i < 9; i++) {
+    gpio_set_level(scl_pin, 0);
+    esp_rom_delay_us(10);
+    gpio_set_level(scl_pin, 1);
+    esp_rom_delay_us(10);
+    pulses++;
+
+    if (gpio_get_level(sda_pin) == 1) {
+      sda_released = true;
+      break;
+    }
+  }
+
+  if (sda_released) {
+    gpio_set_level(sda_pin, 0);
+    esp_rom_delay_us(5);
+    gpio_set_level(scl_pin, 1);
+    esp_rom_delay_us(5);
+    gpio_set_level(sda_pin, 1);
+    esp_rom_delay_us(5);
+    ESP_LOGI(TAG, "I2C bus recovery OK after %d SCL pulses", pulses);
+  } else {
+    ESP_LOGE(TAG, "I2C bus recovery FAILED: SDA still low after 9 pulses");
+  }
+
+  i2c_reset_tx_fifo(i2c_num);
+  i2c_reset_rx_fifo(i2c_num);
+}
+
+static uint8_t bh1750_normalize_addr(uint8_t addr)
+{
   if (addr == 0x23 || addr == 0x5C) {
     return addr;
   }
@@ -40,7 +92,8 @@ static uint8_t bh1750_normalize_addr(uint8_t addr) {
   return addr;
 }
 
-static esp_err_t iic_sensor_init(void) {
+static esp_err_t iic_sensor_init(void)
+{
   const int i2c_master_port = SENSOR_I2C_PORT;
   i2c_config_t conf = {
       .mode = I2C_MODE_MASTER,
@@ -67,10 +120,13 @@ static esp_err_t iic_sensor_init(void) {
     return err;
   }
 
+  i2c_set_timeout(i2c_master_port, 0xFFFFF);
+
   return ESP_OK;
 }
 
-static esp_err_t bh1750_read_lux_once(uint8_t addr, float *lux) {
+static esp_err_t bh1750_read_lux_once(uint8_t addr, float *lux)
+{
   if (lux == NULL) {
     return ESP_ERR_INVALID_ARG;
   }
@@ -101,7 +157,8 @@ static esp_err_t bh1750_read_lux_once(uint8_t addr, float *lux) {
   return ESP_OK;
 }
 
-static esp_err_t bh1750_read_lux(float *lux) {
+static esp_err_t bh1750_read_lux(float *lux)
+{
   if (lux == NULL) {
     return ESP_ERR_INVALID_ARG;
   }
@@ -141,7 +198,8 @@ static esp_err_t bh1750_read_lux(float *lux) {
   return last_err;
 }
 
-static esp_err_t sht30_read_temp_humi(float *temp, float *hum) {
+static esp_err_t sht30_read_temp_humi(float *temp, float *hum)
+{
   if (temp == NULL || hum == NULL) {
     return ESP_ERR_INVALID_ARG;
   }
@@ -173,7 +231,8 @@ static esp_err_t sht30_read_temp_humi(float *temp, float *hum) {
   return ESP_OK;
 }
 
-static void iic_sensor_task(void *pvParameters) {
+static void iic_sensor_task(void *pvParameters)
+{
   (void)pvParameters;
 
   float temp = 0.0f;
@@ -181,31 +240,48 @@ static void iic_sensor_task(void *pvParameters) {
   float lux = 0.0f;
   uint32_t last_sht_fail_log = 0;
   uint32_t last_bh_fail_log = 0;
+  int consecutive_failures = 0;
 
   ESP_LOGI(TAG, "Sensor task started");
 
   while (1) {
-    if (sht30_read_temp_humi(&temp, &hum) == ESP_OK) {
+    esp_err_t err = sht30_read_temp_humi(&temp, &hum);
+    if (err == ESP_OK) {
+      consecutive_failures = 0;
       if (xSemaphoreTake(g_sensor_mutex, portMAX_DELAY) == pdTRUE) {
         g_sensor_data.temperature = temp;
         g_sensor_data.humidity = hum;
         g_sht30_ready = true;
         xSemaphoreGive(g_sensor_mutex);
       }
-    } else if (esp_log_timestamp() - last_sht_fail_log > 30000U) {
-      ESP_LOGW(TAG, "Failed to read SHT30 (silencing logs for 30s)");
-      last_sht_fail_log = esp_log_timestamp();
+    } else {
+      consecutive_failures++;
+      if (esp_log_timestamp() - last_sht_fail_log > 30000U) {
+        ESP_LOGW(TAG, "Failed to read SHT30 (silencing logs for 30s)");
+        last_sht_fail_log = esp_log_timestamp();
+      }
     }
 
     if (bh1750_read_lux(&lux) == ESP_OK) {
+      consecutive_failures = 0;
       if (xSemaphoreTake(g_sensor_mutex, portMAX_DELAY) == pdTRUE) {
         g_sensor_data.lux = lux;
         g_bh1750_ready = true;
         xSemaphoreGive(g_sensor_mutex);
       }
-    } else if (esp_log_timestamp() - last_bh_fail_log > 30000U) {
-      ESP_LOGW(TAG, "Failed to read BH1750 (silencing logs for 30s)");
-      last_bh_fail_log = esp_log_timestamp();
+    } else {
+      consecutive_failures++;
+      if (esp_log_timestamp() - last_bh_fail_log > 30000U) {
+        ESP_LOGW(TAG, "Failed to read BH1750 (silencing logs for 30s)");
+        last_bh_fail_log = esp_log_timestamp();
+      }
+    }
+
+    if (consecutive_failures >= I2C_BUS_FAIL_THRESHOLD) {
+      ESP_LOGW(TAG, "I2C bus stuck after %d consecutive failures, recovering...",
+               consecutive_failures);
+      i2c_bus_recover(SENSOR_I2C_PORT, SENSOR_I2C_SDA, SENSOR_I2C_SCL);
+      consecutive_failures = 0;
     }
 
     ESP_LOGD(TAG, "Temp: %.2f, Hum: %.2f, Lux: %.2f", temp, hum, lux);
@@ -213,7 +289,8 @@ static void iic_sensor_task(void *pvParameters) {
   }
 }
 
-esp_err_t iic_sensor_task_start(void) {
+esp_err_t iic_sensor_task_start(void)
+{
   esp_err_t err = iic_sensor_init();
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "I2C init failed");
@@ -234,7 +311,8 @@ esp_err_t iic_sensor_task_start(void) {
   return ESP_OK;
 }
 
-esp_err_t iic_sensor_get_data(iic_sensor_data_t *data) {
+esp_err_t iic_sensor_get_data(iic_sensor_data_t *data)
+{
   if (data == NULL) {
     return ESP_ERR_INVALID_ARG;
   }
